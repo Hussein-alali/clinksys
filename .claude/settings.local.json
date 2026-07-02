@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx serve *)",
+      "Bash(node --check C:/Users/bdalr/Desktop/clinksys/src/supabase.jsx)",
+      "Bash(cp C:/Users/bdalr/Desktop/clinksys/src/__TRACKED_VAR__.jsx /tmp/__TRACKED_VAR__.js)",
+      "Bash(node --check /tmp/__TRACKED_VAR__.js)",
+      "Bash(cp C:/Users/bdalr/Desktop/clinksys/src/supabase.jsx /tmp/supabase.js)",
+      "Bash(node --check /tmp/supabase.js)",
+      "Bash(mkdir -p /tmp/kinetic-test)",
+      "Read(//tmp/**)",
+      "Bash(npm init *)",
+      "Bash(npm i *)",
+      "Bash(node parse.js)",
+      "Bash(node xref.js)",
+      "Bash(grep -cE \";$\" C:/Users/bdalr/Desktop/clinksys/supabase-schema.sql)",
+      "Bash(node smoke.js)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:8765/ --max-time 2)",
+      "Bash(python -m http.server 8765)",
+      "Bash(curl -sS -o /tmp/index_out.html -w \"HTTP %{http_code} — %{size_download} bytes\\\\n\" http://localhost:8765/index.html)",
+      "Bash(curl -sS -o /tmp/supabase_out.jsx -w \"supabase.jsx: HTTP %{http_code} — %{size_download} bytes\\\\n\" http://localhost:8765/src/supabase.jsx)",
+      "Bash(curl -sS -o /tmp/screens2_out.jsx -w \"screens2.jsx: HTTP %{http_code} — %{size_download} bytes\\\\n\" http://localhost:8765/src/screens2.jsx)",
+      "Bash(kill %1)",
+      "Bash(npm --version)",
+      "Bash(npm install *)",
+      "Bash(npm root *)",
+      "Bash(node parsecheck.js)",
+      "Bash(python -m http.server 8765 --bind 127.0.0.1)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}  bytes=%{size_download}\\\\n\" http://127.0.0.1:8765/index.html)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}  bytes=%{size_download}\\\\n\" http://127.0.0.1:8765/src/screens2.jsx)",
+      "Bash(git -C /c/Users/bdalr/Desktop/clinksys rev-parse --is-inside-work-tree)",
+      "Bash(node -e ' *)",
+      "Bash(npx *)",
+      "Bash(curl -sf http://127.0.0.1:8123/index.html -o /dev/null)",
+      "Bash(curl -s http://127.0.0.1:8123/index.html)"
+    ]
+  }
+}

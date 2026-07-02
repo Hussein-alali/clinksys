@@ -1,0 +1,746 @@
+
+
+// ===== src/shell.jsx =====
+// App shell — sidebar, topbar, container
+
+// Whitelist of icon names allowed in user-defined custom sections. Prevents
+// a custom `icon` string from reaching into non-icon properties on the icons
+// object (e.g. "constructor").
+const CUSTOM_ICON_WHITELIST = new Set([
+  "Layers","Users","Calendar","Clipboard","Activity","Package","CreditCard",
+  "FileText","Chart","Send","Settings","Phone","Mail","MapPin","Heart",
+  "Stethoscope","Megaphone","Sparkle","Pin","Sun","Moon","Dashboard",
+]);
+
+function Sidebar({ active, onNav, role, user }) {
+  // ── Live clinic + custom sections (re-render on updates) ──────
+  const [clinic, setClinic] = React.useState(window.CLINIC || { name:"Kinetic", subtitle:"نظام العيادة", logo:null });
+  const [customs, setCustoms] = React.useState(window.CUSTOM_SECTIONS || []);
+  // Bump on any data change so patient/appt counts stay live.
+  const [, setTick] = React.useState(0);
+  React.useEffect(()=>{
+    const c = ()=> setClinic(window.CLINIC || { name:"Kinetic", subtitle:"نظام العيادة", logo:null });
+    const s = ()=> setCustoms(window.CUSTOM_SECTIONS || []);
+    const d = ()=> setTick(t=>t+1);
+    window.addEventListener("kinetic:clinic-updated", c);
+    window.addEventListener("kinetic:sections-updated", s);
+    window.addEventListener("kinetic:data-updated", d);
+    return ()=>{
+      window.removeEventListener("kinetic:clinic-updated", c);
+      window.removeEventListener("kinetic:sections-updated", s);
+      window.removeEventListener("kinetic:data-updated", d);
+    };
+  },[]);
+
+  // ── Role-aware counts — every job sees only its own caseload ──
+  const pCount = window.scopePatients ? window.scopePatients(DATA.patients).length : DATA.patients.length;
+  // Bookings that aren't just an empty slot. Handles both seed labels ("متاح")
+  // and canonical Supabase values ("available").
+  const aCount = (window.scopeAppts ? window.scopeAppts(DATA.appts) : DATA.appts)
+    .filter(a => a.status !== "متاح" && a.status !== "available").length;
+  const dashLabel = (window.ROLE_DASH_LABEL && window.ROLE_DASH_LABEL[role]) || "لوحة التحكم";
+
+  // ── Custom section groups (admin-defined) ─────────────────────
+  const customGroups = {};
+  customs.filter(s=>s.visible!==false).forEach(s=>{
+    const g = s.group || "مخصص";
+    if(!customGroups[g]) customGroups[g] = [];
+    const iconName = CUSTOM_ICON_WHITELIST.has(s.icon) ? s.icon : "Layers";
+    const Ico = I[iconName] || I.Layers;
+    customGroups[g].push({ id:"custom:"+s.id, label:s.label, icon:<Ico size={17}/>, custom:true });
+  });
+  const customGroupList = Object.keys(customGroups).map(title=>({ title, items:customGroups[title] }));
+
+  const allGroups = [
+    { title: null, items: [
+      { id:"dashboard", label:dashLabel, icon: <I.Dashboard size={17}/> },
+    ]},
+    { title: "الرعاية", items: [
+      { id:"patients",    label:"المرضى",        icon: <I.Users size={17}/>, badge: pCount },
+      { id:"appointments",label:"المواعيد",    icon: <I.Calendar size={17}/>, badge: aCount, badgeKind:"blue" },
+      { id:"treatments",  label:"خطط العلاج", icon: <I.Clipboard size={17}/> },
+      { id:"sessions",    label:"جلسات العلاج",icon: <I.Activity size={17}/> },
+    ]},
+    { title: "المالية", items: [
+      { id:"payments", label:"المدفوعات والفواتير", icon: <I.CreditCard size={17}/> },
+      { id:"packages", label:"الباقات",            icon: <I.Package size={17}/> },
+    ]},
+    { title: "النمو", items: [
+      { id:"campaigns", label:"حملات واتساب", icon: <I.Megaphone size={17}/> },
+      { id:"reports",   label:"التقارير",            icon: <I.Chart size={17}/> },
+    ]},
+    ...customGroupList,
+    { title: "النظام", items: [
+      { id:"settings", label:"الإعدادات", icon: <I.Settings size={17}/> },
+    ]},
+  ];
+
+  // ── Hide routes this role can't reach; drop empty sections ────
+  // Custom sections (prefixed "custom:") are visible only to admin.
+  const allowed = (window.ROLE_ROUTES && window.ROLE_ROUTES[role]) || null;
+  const groups = allGroups
+    .map(g => ({ ...g, items: g.items.filter(it => {
+      if (it.custom) return role === "مدير";
+      return !allowed || allowed.includes(it.id);
+    }) }))
+    .filter(g => g.items.length > 0);
+
+  const u = user || { name:"شريف عادل", email:"sherif@kinetic.eg" };
+  const uInit = window.initialsOf ? window.initialsOf(u.name) : "ش ع";
+
+  return (
+    <aside className="sidebar">
+      {/* Brand */}
+      <div style={{padding:"18px 20px 14px",display:"flex",alignItems:"center",gap:10}}>
+        {clinic.logo
+          ? <img src={clinic.logo} alt="clinic logo" style={{width:30,height:30,borderRadius:9,objectFit:"cover",background:"var(--blue-50)"}}/>
+          : <I.Logo size={30}/>}
+        <div style={{display:"flex",flexDirection:"column",lineHeight:1.1}}>
+          <span style={{fontWeight:600,fontSize:15,letterSpacing:"-.01em"}}>{clinic.name || "Kinetic"}</span>
+          <span style={{fontSize:10.5,color:"var(--ink-500)",letterSpacing:".06em",textTransform:"uppercase"}}>{clinic.subtitle || "نظام العيادة"}</span>
+        </div>
+      </div>
+
+      {/* Clinic switcher */}
+      <button style={{
+        margin:"4px 14px 10px", padding:"9px 11px", background:"var(--ink-50)",
+        border:"1px solid var(--ink-200)", borderRadius:11, display:"flex",
+        alignItems:"center", gap:10, cursor:"pointer", textAlign:"left"
+      }}>
+        <div style={{width:26,height:26,borderRadius:7,background:"var(--blue-100)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <I.MapPin size={13} style={{color:"var(--blue-700)"}}/>
+        </div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12.5,fontWeight:600,color:"var(--ink-900)"}}>فرع مصر الجديدة</div>
+          <div style={{fontSize:10.5,color:"var(--ink-500)"}}>٤ أخصائيين · ٥ غرف</div>
+        </div>
+        <I.ChevronDown size={13} style={{color:"var(--ink-400)"}}/>
+      </button>
+
+      <nav style={{flex:1, overflowY:"auto", paddingBottom:14}}>
+        {groups.map((g,gi)=>(
+          <div key={gi}>
+            {g.title && <div className="nav-section">{g.title}</div>}
+            {g.items.map(it => (
+              <div key={it.id}
+                className={"nav-item" + (active===it.id?" active":"")}
+                onClick={()=>onNav(it.id)}>
+                {it.icon}
+                <span style={{flex:1}}>{it.label}</span>
+                {it.badge!=null && (
+                  <span className="mono" style={{
+                    fontSize:10.5, color: it.badgeKind==="blue"?"var(--blue-900)":"var(--ink-500)",
+                    background: it.badgeKind==="blue"?"var(--blue-100)":"var(--ink-100)",
+                    padding:"1.5px 7px", borderRadius:999
+                  }}>{it.badge}</span>
+                )}
+              </div>
+            ))}
+            {gi<groups.length-1 && <div style={{height:10}}/>}
+          </div>
+        ))}
+      </nav>
+
+      {/* user card */}
+      <div style={{padding:"12px 14px",borderTop:"1px solid var(--ink-200)",display:"flex",alignItems:"center",gap:10}}>
+        <div className="av md" style={{background:u.color||"var(--blue-500)",color:"#fff"}}>{uInit}</div>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:12.5,fontWeight:600,lineHeight:1.2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{u.name}</div>
+          <div style={{fontSize:10.5,color:"var(--ink-500)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{role || "مدير"} · {u.email}</div>
+        </div>
+        <button className="btn btn-ghost btn-icon" title="تسجيل الخروج" onClick={()=>onNav("logout")}>
+          <I.Logout size={15}/>
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function TopBar({ title, crumb, right, onSearch, theme, setTheme }) {
+  return (
+    <div className="topbar">
+      <div style={{flex:1,display:"flex",alignItems:"center",gap:14}}>
+        <div>
+          {crumb && <div className="crumb">{crumb.map((c,i)=>(
+            <React.Fragment key={i}>
+              <span>{c}</span>
+              {i<crumb.length-1 && <I.Chevron size={11}/>}
+            </React.Fragment>
+          ))}</div>}
+          <div className="h2">{title}</div>
+        </div>
+      </div>
+
+      <div style={{position:"relative",width:320}}>
+        <I.Search size={15} style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",color:"var(--ink-400)"}}/>
+        <input className="input" placeholder="ابحث عن مرضى، مواعيد، فواتير…"
+          style={{paddingLeft:34,height:36,background:"var(--ink-50)",border:"1px solid transparent"}}
+          onChange={(e)=>onSearch && onSearch(e.target.value)}/>
+        <span className="mono" style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",fontSize:10,color:"var(--ink-400)",background:"#fff",border:"1px solid var(--ink-200)",borderRadius:5,padding:"1px 5px"}}>⌘K</span>
+      </div>
+
+      <button className="btn btn-ghost btn-icon" title="الإشعارات">
+        <I.Bell size={17}/>
+        <span style={{position:"absolute",width:6,height:6,background:"var(--red)",borderRadius:"50%",marginLeft:-7,marginTop:-7}}></span>
+      </button>
+      <button className="btn btn-ghost btn-icon" title="المظهر" onClick={()=>setTheme && setTheme(theme==="light"?"dark":"light")}>
+        {theme==="dark" ? <I.Sun size={17}/> : <I.Moon size={17}/>}
+      </button>
+      {right}
+    </div>
+  );
+}
+
+// ── Generic empty state ────────────────────────────────────────
+function EmptyState({ icon, title, body, action }) {
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"60px 24px",textAlign:"center"}}>
+      <div style={{width:56,height:56,borderRadius:14,background:"var(--blue-100)",color:"var(--blue-700)",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:14}}>
+        {icon || <I.Sparkle size={22}/>}
+      </div>
+      <div className="h3" style={{marginBottom:4}}>{title}</div>
+      <div className="muted" style={{maxWidth:360,fontSize:13}}>{body}</div>
+      {action && <div style={{marginTop:16}}>{action}</div>}
+    </div>
+  );
+}
+
+// ── Skeleton row ───────────────────────────────────────────────
+function SkeletonRow({ count=5 }) {
+  return Array.from({length:count}).map((_,i)=>(
+    <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",borderBottom:"1px solid var(--ink-100)"}}>
+      <div className="skel" style={{width:32,height:32,borderRadius:999}}/>
+      <div className="skel" style={{height:11,width:`${30+Math.random()*30}%`}}/>
+      <div className="skel" style={{height:11,width:`${15+Math.random()*15}%`,marginLeft:"auto"}}/>
+      <div className="skel" style={{height:11,width:60}}/>
+    </div>
+  ));
+}
+
+// ── Modal ──────────────────────────────────────────────────────
+function Modal({ open, onClose, children, title, footer, width=560 }) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" style={{width,maxWidth:`calc(100% - 40px)`}} onClick={e=>e.stopPropagation()}>
+        {title && (
+          <div style={{padding:"18px 22px",borderBottom:"1px solid var(--ink-100)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <div className="h3">{title}</div>
+            <button className="btn btn-ghost btn-icon" onClick={onClose}><I.X size={16}/></button>
+          </div>
+        )}
+        <div style={{padding:"20px 22px"}}>{children}</div>
+        {footer && <div style={{padding:"14px 22px",borderTop:"1px solid var(--ink-100)",display:"flex",justifyContent:"flex-end",gap:10,background:"var(--ink-50)",borderBottomLeftRadius:18,borderBottomRightRadius:18}}>{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Toast ──────────────────────────────────────────────────────
+function Toast({ msg, kind="success" }) {
+  if (!msg) return null;
+  const color = kind==="success" ? "var(--green)" : kind==="error" ? "var(--red)" : "var(--blue-500)";
+  return (
+    <div style={{
+      position:"fixed",bottom:24,right:24,zIndex:200,
+      background:"#fff",border:"1px solid var(--ink-200)",borderRadius:12,
+      boxShadow:"var(--shadow-lg)",padding:"12px 16px",
+      display:"flex",alignItems:"center",gap:10, animation:"popin .2s"
+    }}>
+      <span style={{width:8,height:8,borderRadius:999,background:color}}></span>
+      <span style={{fontSize:13.5}}>{msg}</span>
+    </div>
+  );
+}
+
+// ── Page container ─────────────────────────────────────────────
+function Page({ children }) {
+  return <div className="page">{children}</div>;
+}
+
+// ── Row action menu ────────────────────────────────────────────
+// Small popover triggered by a more-dots icon. Pass an `items` array of
+// { label, icon?, onClick, danger? }. Closes on outside click and Escape.
+function RowMenu({ items = [], size = 13, stopRowClick = true }) {
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <div ref={ref} style={{position:"relative",display:"inline-block"}}>
+      <button className="btn btn-ghost btn-icon" title="المزيد" onClick={(e)=>{ if (stopRowClick) e.stopPropagation(); setOpen(o=>!o); }}>
+        <I.More size={size}/>
+      </button>
+      {open && (
+        <div style={{position:"absolute",top:"calc(100% + 4px)",insetInlineEnd:0,minWidth:180,background:"#fff",border:"1px solid var(--ink-200)",borderRadius:10,boxShadow:"var(--shadow-md)",zIndex:20,padding:6}}>
+          {items.map((it, i) => (
+            <button key={i} onClick={(e)=>{ e.stopPropagation(); setOpen(false); if (it.onClick) it.onClick(); }}
+              style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"7px 10px",fontSize:13,textAlign:"start",background:"transparent",border:"none",borderRadius:6,cursor:"pointer",color:it.danger?"var(--red)":"var(--ink-700)",fontFamily:"inherit"}}
+              onMouseEnter={(e)=>{ e.currentTarget.style.background = "var(--ink-50)"; }}
+              onMouseLeave={(e)=>{ e.currentTarget.style.background = "transparent"; }}
+            >
+              {it.icon}
+              <span>{it.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+window.RowMenu = RowMenu;
+
+// ── Stat card ──────────────────────────────────────────────────
+function StatCard({ label, value, delta, deltaKind, icon, accent="#7BBDE8", spark }) {
+  const up = deltaKind === "up";
+  return (
+    <div className="card" style={{padding:18,display:"flex",flexDirection:"column",gap:12}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <span style={{fontSize:12,color:"var(--ink-500)",fontWeight:500}}>{label}</span>
+        <div style={{width:28,height:28,borderRadius:8,background:`${accent}22`,color:accent,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          {icon}
+        </div>
+      </div>
+      <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+        <span style={{fontSize:26,fontWeight:600,letterSpacing:"-.01em"}} className="mono tnum">{value}</span>
+        {delta && (
+          <span style={{
+            fontSize:11.5,color: up?"var(--green)":"var(--red)",display:"inline-flex",alignItems:"center",gap:3,
+            background:up?"var(--green-bg)":"var(--red-bg)",padding:"2px 7px",borderRadius:999
+          }}>
+            {up? <I.ArrowUp size={11}/> : <I.ArrowDown size={11}/>}
+            {delta}
+          </span>
+        )}
+      </div>
+      {spark && <Sparkline data={spark} color={accent} width={200} height={28}/>}
+    </div>
+  );
+}
+
+window.Sidebar = Sidebar;
+window.TopBar = TopBar;
+window.EmptyState = EmptyState;
+window.SkeletonRow = SkeletonRow;
+window.Modal = Modal;
+window.Toast = Toast;
+window.Page = Page;
+window.StatCard = StatCard;
+
+
+// ===== src/auth.jsx =====
+// Login screen — original aesthetic مع brand blues
+
+// Demo mode: only when the URL says so (?demo=1) OR Supabase isn't wired.
+// In production with SB, mock login must NEVER grant an admin JWT-equivalent.
+function isDemoMode() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    if (p.get("demo") === "1") return true;
+  } catch {}
+  return !window.SB;
+}
+
+function AuthScreen({ onLogin, onBookAsGuest }) {
+  // ── State ──────────────────────────────────────────────────
+  const [mode, setMode] = React.useState("login"); // login | forgot | reset
+  const [email, setEmail] = React.useState("sherif@kinetic.eg");
+  // Empty by default. The placeholder bullets used to seed this field
+  // caused a real password containing "•" to bypass Supabase Auth.
+  const [pw, setPw] = React.useState("");
+  const [role, setRole] = React.useState("مدير");
+  const [busy, setBusy] = React.useState(false);
+  const [showPw, setShowPw] = React.useState(false);
+  const [shake, setShake] = React.useState(false);
+
+  // ── Handlers ───────────────────────────────────────────────
+  const ROLE_TO_AR = {
+    admin:"مدير", receptionist:"موظف استقبال", doctor:"طبيب", therapist:"الأخصائي", patient:"مريض",
+  };
+
+  async function submit(e) {
+    e && e.preventDefault();
+    if (!pw) {
+      setShake(true); setTimeout(()=>setShake(false), 400);
+      if (window.showToast) window.showToast("أدخل كلمة المرور", "error");
+      return;
+    }
+    setBusy(true);
+    // Prefer Supabase Auth whenever it's configured. Mock login is gated
+    // to explicit demo mode so a real deployment can't accidentally hand
+    // out the requested role without a credential check.
+    if (window.SB && window.signInEmail && !isDemoMode()) {
+      try {
+        const res = await window.signInEmail(email, pw);
+        setBusy(false);
+        if (!res.ok) {
+          setShake(true); setTimeout(()=>setShake(false), 400);
+          if (window.showToast) window.showToast(res.error || "بيانات الدخول غير صحيحة", "error");
+          return;
+        }
+        const dbRole = res.role || res.staff?.role;
+        const arRole = ROLE_TO_AR[dbRole] || role;
+        const prof = (window.ROLE_PROFILES||{})[arRole] || { name:res.staff?.name || res.user?.email || email, email };
+        onLogin && onLogin({
+          name: res.staff?.name || prof.name,
+          role: arRole,
+          email: res.user?.email || email,
+          match: prof.match || null,
+          title: prof.title,
+          color: prof.color,
+          scope: window.roleScope ? window.roleScope(arRole) : "all",
+        });
+        return;
+      } catch (err) {
+        setBusy(false);
+        setShake(true); setTimeout(()=>setShake(false), 400);
+        if (window.showToast) window.showToast(err.message || "تعذّر تسجيل الدخول", "error");
+        return;
+      }
+    }
+    // Mock path (demo mode) — role selector picks the identity.
+    setTimeout(()=>{
+      setBusy(false);
+      const prof = (window.ROLE_PROFILES||{})[role] || { name:"شريف عادل", email:"sherif@kinetic.eg", match:null };
+      onLogin && onLogin({
+        name: prof.name,
+        role,
+        email: prof.email,
+        match: prof.match || null,
+        title: prof.title,
+        color: prof.color,
+        scope: window.roleScope ? window.roleScope(role) : "all",
+      });
+    }, 700);
+  }
+
+  function handleRolePick(r) {
+    setRole(r);
+    const pr = (window.ROLE_PROFILES||{})[r];
+    if (pr) setEmail(pr.email);
+  }
+
+  const roles = ["مدير","موظف استقبال","طبيب","الأخصائي"];
+
+  return (
+    <div style={{
+      minHeight:"100vh",display:"grid",gridTemplateColumns:"1fr 1.05fr",
+      background:"var(--ink-50)"
+    }}>
+      {/* Left — brand panel */}
+      <div style={{
+        background:"linear-gradient(155deg, #7BBDE8 0%, #BDD8E9 60%, #E8F1F7 100%)",
+        position:"relative",padding:"40px 48px",overflow:"hidden",
+        display:"flex",flexDirection:"column",justifyContent:"space-between",
+        color:"#fff"
+      }}>
+        {/* decorative blobs */}
+        <svg style={{position:"absolute",inset:0,width:"100%",height:"100%",opacity:.45}} viewBox="0 0 600 800" preserveAspectRatio="none">
+          <defs>
+            <radialGradient id="g1" cx=".25" cy=".2">
+              <stop offset="0%" stopColor="#fff" stopOpacity=".7"/>
+              <stop offset="100%" stopColor="#fff" stopOpacity="0"/>
+            </radialGradient>
+          </defs>
+          <circle cx="120" cy="160" r="280" fill="url(#g1)"/>
+          <path d="M0 600 Q 200 540 400 620 T 800 580 L 800 800 L 0 800 Z" fill="rgba(255,255,255,.35)"/>
+        </svg>
+
+        <div style={{position:"relative",display:"flex",alignItems:"center",gap:12}}>
+          <I.Logo size={36}/>
+          <div>
+            <div style={{fontWeight:600,fontSize:20,color:"#0F1E2B"}}>Kinetic</div>
+            <div style={{fontSize:11,letterSpacing:".08em",color:"#1E4A6E",textTransform:"uppercase"}}>نظام العيادة</div>
+          </div>
+        </div>
+
+        <div style={{position:"relative",maxWidth:440}}>
+          <div className="serif" style={{fontSize:46,lineHeight:1.05,color:"#0F1E2B",letterSpacing:"-.01em",marginBottom:18}}>
+            العيادة التي <em>تتحرك</em> مع مرضاك.
+          </div>
+          <p style={{fontSize:14.5,color:"#1E4A6E",lineHeight:1.55,opacity:.9}}>
+            جدول الجلسات، اكتب ملاحظات التقدّم، أدر الباقات وحملات الواتساب —
+            كل هذا من مساحة عمل واحدة هادئة مصممة للعلاج الطبيعي.
+          </p>
+
+          {/* mock stat tiles */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3, 1fr)",gap:10,marginTop:28}}>
+            {[
+              {k:"المرضى",v:"248"},
+              {k:"جلسات/شهر",v:"1,420"},
+              {k:"معدّل الالتزام",v:"97%"},
+            ].map((s,i)=>(
+              <div key={i} style={{background:"rgba(255,255,255,.55)",backdropFilter:"blur(8px)",border:"1px solid rgba(255,255,255,.6)",padding:"12px 14px",borderRadius:14}}>
+                <div style={{fontSize:11,color:"#1E4A6E",letterSpacing:".04em",textTransform:"uppercase"}}>{s.k}</div>
+                <div className="mono" style={{fontSize:22,fontWeight:600,color:"#0F1E2B",marginTop:2}}>{s.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{position:"relative",fontSize:12,color:"#1E4A6E",opacity:.8}}>
+          © 2026 Kinetic نظام العيادة · صُنع في القاهرة
+        </div>
+      </div>
+
+      {/* Right — form */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",padding:"40px"}}>
+        <div style={{width:"100%",maxWidth:420, animation: shake?"shake .35s":""}}>
+          {mode==="login" && (
+            <>
+              <div className="h1" style={{fontSize:30,marginBottom:6}}>أهلاً بعودتك</div>
+              <div className="muted" style={{fontSize:14,marginBottom:28}}>
+                سجّل الدخول للمتابعة إلى مساحة عيادتك.
+              </div>
+
+              {/* الدور picker */}
+              <div className="label">سجّل الدخول بصفة</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:18}}>
+                {roles.map(r=>(
+                  <button key={r} type="button"
+                    onClick={()=>handleRolePick(r)}
+                    style={{
+                      padding:"8px 4px",border:`1px solid ${role===r?"var(--blue-500)":"var(--ink-200)"}`,
+                      background: role===r?"var(--blue-100)":"#fff",
+                      color: role===r?"var(--blue-900)":"var(--ink-700)",
+                      borderRadius:10,fontSize:11.5,fontWeight:500,cursor:"pointer",
+                      transition:"all .12s"
+                    }}>{r}</button>
+                ))}
+              </div>
+
+              <form onSubmit={submit}>
+                <div className="label">البريد الإلكتروني</div>
+                <input className="input" type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@clinic.com" style={{marginBottom:14,height:42}}/>
+
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div className="label">كلمة المرور</div>
+                  <button type="button" onClick={()=>setMode("forgot")} style={{background:"none",border:"none",color:"var(--blue-700)",fontSize:12,cursor:"pointer",padding:0}}>نسيت؟</button>
+                </div>
+                <div style={{position:"relative"}}>
+                  <input className="input" type={showPw?"text":"password"} value={pw} onChange={e=>setPw(e.target.value)} style={{height:42,paddingRight:38}}/>
+                  <button type="button" onClick={()=>setShowPw(!showPw)} style={{position:"absolute",right:6,top:5,padding:6,border:"none",background:"transparent",cursor:"pointer",color:"var(--ink-500)"}}>
+                    <I.Eye size={15}/>
+                  </button>
+                </div>
+
+                <label style={{display:"flex",alignItems:"center",gap:8,fontSize:12.5,color:"var(--ink-700)",marginTop:14}}>
+                  <input type="checkbox" defaultChecked/> أبقني مسجلاً لمدة 30 يوم
+                </label>
+
+                <button type="submit" disabled={busy} className="btn btn-blue" style={{width:"100%",height:44,justifyContent:"center",marginTop:18,fontSize:14}}>
+                  {busy ? <span className="spin" style={{width:14,height:14,border:"2px solid #fff",borderTopColor:"transparent",borderRadius:"50%"}}/> : "تسجيل الدخول"}
+                  {!busy && <I.ArrowRight size={15}/>}
+                </button>
+              </form>
+
+              <div style={{display:"flex",alignItems:"center",gap:12,margin:"20px 0",color:"var(--ink-400)",fontSize:12}}>
+                <hr className="sep" style={{flex:1}}/> أو <hr className="sep" style={{flex:1}}/>
+              </div>
+
+              <button className="btn btn-secondary" style={{width:"100%",height:42,justifyContent:"center"}}>
+                <svg width="15" height="15" viewBox="0 0 24 24"><path fill="#4285F4" d="M22 12c0-.7-.1-1.4-.2-2H12v3.8h5.6c-.2 1.3-.9 2.4-2 3.1v2.5h3.2c1.9-1.7 3-4.3 3-7.4z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6C4.8 19.9 8.1 22 12 22z"/><path fill="#FBBC05" d="M6.4 14c-.2-.6-.3-1.3-.3-2s.1-1.4.3-2V7.4H3.1C2.4 8.8 2 10.4 2 12s.4 3.2 1.1 4.6L6.4 14z"/><path fill="#EA4335" d="M12 5.9c1.5 0 2.8.5 3.8 1.5l2.9-2.9C16.9 2.9 14.7 2 12 2 8.1 2 4.8 4.1 3.1 7.4L6.4 10c.8-2.3 3-4.1 5.6-4.1z"/></svg>
+                المتابعة عبر Google
+              </button>
+
+              {/* المريض — no account needed */}
+              <button type="button" onClick={onBookAsGuest} style={{
+                marginTop:22, width:"100%", padding:"14px 16px",
+                background:"linear-gradient(135deg, var(--blue-50), #fff)",
+                border:"1px solid var(--blue-100)", borderRadius:12, cursor:"pointer",
+                display:"flex", alignItems:"center", gap:12, fontFamily:"inherit",
+                textAlign:"left", transition:"all .15s"
+              }}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor="var(--blue-500)";e.currentTarget.style.boxShadow="0 6px 20px rgba(123,189,232,.18)";}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="var(--blue-100)";e.currentTarget.style.boxShadow="";}}
+              >
+                <div style={{width:38,height:38,borderRadius:11,background:"var(--blue-500)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                  <I.Calendar size={17}/>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:600,fontSize:13.5,color:"var(--ink-900)"}}>هل أنت مريض؟ احجز زيارة ←</div>
+                  <div className="muted" style={{fontSize:11.5,marginTop:2}}>لا حاجة لحساب · 30 ثانية</div>
+                </div>
+              </button>
+
+              <div className="muted" style={{textAlign:"center",fontSize:11.5,marginTop:18}}>
+                تحتاج حساب عيادة؟ <a href="#" style={{color:"var(--blue-700)",fontWeight:500}}>تواصل مع المبيعات</a>
+              </div>
+            </>
+          )}
+
+          {mode==="forgot" && (
+            <>
+              <div className="h1" style={{fontSize:30,marginBottom:6}}>إعادة تعيين كلمة المرور</div>
+              <div className="muted" style={{fontSize:14,marginBottom:28}}>
+                سنرسل رابطًا لمرة واحدة إلى بريدك المسجّل.
+              </div>
+              <div className="label">البريد الإلكتروني</div>
+              <input className="input" type="email" defaultValue="sherif@kinetic.eg" style={{height:42,marginBottom:18}}/>
+              <button className="btn btn-blue" style={{width:"100%",height:44,justifyContent:"center"}} onClick={()=>setMode("login")}>
+                إرسال رابط الإعادة <I.ArrowRight size={15}/>
+              </button>
+              <button onClick={()=>setMode("login")} style={{background:"none",border:"none",color:"var(--ink-500)",fontSize:12.5,marginTop:14,cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>
+                <I.ArrowLeft size={13}/> العودة لتسجيل الدخول
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+window.AuthScreen = AuthScreen;
+
+
+// ═══════════════════════════════════════════════════════════════
+// Global CommandPalette (⌘K) — PRD 5.10 Search
+// Indexes patients, appointments (bookings), invoices from window.DATA
+// Renders a modal overlay with keyboard navigation.
+// ═══════════════════════════════════════════════════════════════
+function CommandPalette({ open, onClose, onNav }) {
+  const [q, setQ] = React.useState("");
+  const [i, setI] = React.useState(0);
+  const inputRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (open) {
+      setQ(""); setI(0);
+      setTimeout(() => inputRef.current && inputRef.current.focus(), 30);
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  // Build index from live DATA every open. Apply role scope so a therapist
+  // can't fuzzy-search other therapists' patients, receptionist can't see
+  // finance-only invoices, etc. Falls back to unscoped when helpers aren't
+  // loaded (early boot).
+  const data = window.DATA || {};
+  const norm = (s) => (s || "").toString().toLowerCase();
+  const query = norm(q).trim();
+
+  const patients = window.scopePatients ? window.scopePatients(data.patients || []) : (data.patients || []);
+  const appts    = window.scopeAppts    ? window.scopeAppts(data.appts || [])       : (data.appts || []);
+  const scopedPatientIds = new Set(patients.map(p => p.id || p.patient_id));
+  const payments = (data.payments || []).filter(v => {
+    // If we can identify the patient, gate; otherwise show (admin/reception).
+    if (!v.pid && !v.patient_id) return true;
+    return scopedPatientIds.has(v.pid || v.patient_id);
+  });
+  const allowedRoutes = (window.ROLE_ROUTES && window.ME && window.ROLE_ROUTES[window.ME.role]) || null;
+  const canSeePayments = !allowedRoutes || allowedRoutes.includes("payments");
+
+  const items = [];
+  patients.forEach(p => items.push({
+    kind: "patient", route: "patients", id: p.id,
+    title: p.name, sub: `${p.id} · ${p.diag || ""} · ${p.phone || ""}`,
+    hay: `${p.name} ${p.id} ${p.phone || ""} ${p.diag || ""}`,
+    icon: I.Users,
+  }));
+  appts.forEach(a => items.push({
+    kind: "appointment", route: "appointments", id: a.id,
+    title: `${a.patient} — ${a.time}`, sub: `${a.id} · ${a.dr} · ${a.status}`,
+    hay: `${a.id} ${a.patient} ${a.time} ${a.dr} ${a.th} ${a.status}`,
+    icon: I.Calendar,
+  }));
+  if (canSeePayments) payments.forEach(v => items.push({
+    kind: "invoice", route: "payments", id: v.id,
+    title: `${v.id} — ${v.patient}`, sub: `${v.amount} ج.م · ${v.method} · ${v.status}`,
+    hay: `${v.id} ${v.patient} ${v.method} ${v.status}`,
+    icon: I.CreditCard,
+  }));
+  // Quick-nav actions
+  const NAV = [
+    { title: "لوحة التحكم",   route: "dashboard",    icon: I.Dashboard },
+    { title: "المرضى",         route: "patients",     icon: I.Users },
+    { title: "المواعيد",       route: "appointments", icon: I.Calendar },
+    { title: "جلسات العلاج",   route: "sessions",     icon: I.Activity },
+    { title: "المدفوعات",      route: "payments",     icon: I.CreditCard },
+    { title: "الباقات",        route: "packages",     icon: I.Package },
+    { title: "التقارير",       route: "reports",      icon: I.Chart },
+    { title: "الإعدادات",      route: "settings",     icon: I.Settings },
+  ];
+  NAV.forEach(n => items.push({
+    kind: "page", route: n.route, id: n.route,
+    title: n.title, sub: "الانتقال إلى الصفحة",
+    hay: `${n.title} ${n.route}`, icon: n.icon,
+  }));
+
+  const results = query
+    ? items.filter(it => norm(it.hay).includes(query)).slice(0, 30)
+    : NAV.map(n => ({ kind: "page", route: n.route, id: n.route, title: n.title, sub: "الانتقال", icon: n.icon }));
+
+  const sel = results[Math.min(i, results.length - 1)];
+
+  function pick(r) {
+    if (!r) return;
+    onClose && onClose();
+    onNav && onNav(r.route, r);
+  }
+
+  function onKey(e) {
+    if (e.key === "ArrowDown") { e.preventDefault(); setI(x => Math.min(x + 1, results.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setI(x => Math.max(x - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); pick(sel); }
+    else if (e.key === "Escape") { e.preventDefault(); onClose && onClose(); }
+  }
+
+  return (
+    <div className="modal-backdrop" style={{ alignItems: "flex-start", paddingTop: 90 }} onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 640, width: "calc(100% - 40px)", padding: 0, overflow: "hidden" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", borderBottom: "1px solid var(--ink-100)" }}>
+          <I.Search size={16} style={{ color: "var(--ink-400)" }} />
+          <input ref={inputRef} value={q} onChange={e => { setQ(e.target.value); setI(0); }} onKeyDown={onKey}
+            placeholder="ابحث عن مريض · موعد · فاتورة · صفحة…"
+            style={{ flex: 1, border: "none", outline: "none", fontSize: 15, background: "transparent", fontFamily: "inherit" }} />
+          <span className="mono" style={{ fontSize: 10, color: "var(--ink-400)", border: "1px solid var(--ink-200)", padding: "2px 6px", borderRadius: 5 }}>Esc</span>
+        </div>
+        <div style={{ maxHeight: 420, overflowY: "auto", padding: "6px 0" }}>
+          {results.length === 0 && (
+            <div style={{ padding: "24px 20px", color: "var(--ink-500)", fontSize: 13, textAlign: "center" }}>
+              لا توجد نتائج مطابقة
+            </div>
+          )}
+          {results.map((r, k) => {
+            const Ico = r.icon || I.Search;
+            const active = k === Math.min(i, results.length - 1);
+            return (
+              <div key={r.kind + ":" + r.id + ":" + k}
+                onMouseEnter={() => setI(k)}
+                onClick={() => pick(r)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "10px 18px", cursor: "pointer",
+                  background: active ? "var(--blue-50)" : "transparent",
+                  borderLeft: active ? "3px solid var(--blue-500)" : "3px solid transparent",
+                }}>
+                <div style={{ width: 30, height: 30, borderRadius: 8, background: "var(--ink-100)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-700)", flexShrink: 0 }}>
+                  <Ico size={15} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 500, color: "var(--ink-900)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--ink-500)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.sub}</div>
+                </div>
+                <span className="mono" style={{ fontSize: 10, color: "var(--ink-400)", textTransform: "uppercase", letterSpacing: ".04em" }}>{r.kind}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 18px", borderTop: "1px solid var(--ink-100)", fontSize: 11, color: "var(--ink-500)" }}>
+          <span><span className="mono">↑ ↓</span> للتنقل · <span className="mono">Enter</span> للفتح</span>
+          <span>{results.length} نتيجة</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+window.CommandPalette = CommandPalette;
