@@ -2,7 +2,7 @@
 // Reports each check as PASS/FAIL. Non-zero exit on any FAIL.
 import { chromium } from 'playwright';
 
-const URL = 'http://127.0.0.1:8123/index.html';
+const URL = 'http://127.0.0.1:8123/index.html?demo=1';
 const results = [];
 const record = (name, ok, note = '') => {
   results.push({ name, ok, note });
@@ -23,16 +23,17 @@ page.on('console', (msg) => {
 async function loadFresh() {
   await page.goto(URL, { waitUntil: 'load' });
   await page.waitForFunction(() => window.React && window.KineticData, { timeout: 15000 });
-  // Auto-login demo if the login screen is shown
-  await page.waitForTimeout(500);
-  const isLogin = await page.locator('text=تسجيل الدخول').first().isVisible().catch(() => false);
+  await page.waitForTimeout(400);
+  // On the auth screen, pick "مدير" role, enter any password, click login.
+  const isLogin = await page.locator('h1, .h1').first().textContent().then(t => /أهلاً بعودتك|Welcome/.test(t || '')).catch(() => false);
   if (isLogin) {
-    // Look for the demo-login shortcut
-    const demoBtn = page.locator('button', { hasText: /تجربة|Demo|Try|دخول تجريبي|كمدير|كمشرف/i }).first();
-    if (await demoBtn.count()) {
-      await demoBtn.click();
-      await page.waitForTimeout(400);
-    }
+    const adminBtn = page.locator('button', { hasText: /^مدير$/ }).first();
+    if (await adminBtn.count()) await adminBtn.click();
+    const pwField = page.locator('input[type="password"]').first();
+    if (await pwField.count()) await pwField.fill('demo');
+    const loginBtn = page.locator('button', { hasText: /^تسجيل الدخول$/ }).first();
+    await loginBtn.click();
+    await page.waitForTimeout(700);
   }
 }
 
@@ -48,10 +49,11 @@ record('RowMenu attached to window', rowMenuGlobal);
 // -------- 2. saveClinic persistence via ClinicDetailsPanel --------
 try {
   // Navigate to Settings → clinic tab
-  const settingsLink = page.locator('nav button, aside button, [role="button"]').filter({ hasText: /الإعدادات|Settings/ }).first();
+  const settingsLink = page.locator('.nav-item').filter({ hasText: /الإعدادات|Settings/ }).first();
   await settingsLink.click({ timeout: 5000 });
   await page.waitForTimeout(300);
-  const clinicTab = page.locator('button', { hasText: /العيادة|Clinic/ }).first();
+  // Sub-tabs are .nav-item divs, not buttons; default tab is already "clinic".
+  const clinicTab = page.locator('.nav-item').filter({ hasText: /بيانات العيادة/ }).first();
   if (await clinicTab.count()) await clinicTab.click().catch(() => {});
   await page.waitForTimeout(300);
   // Fill the clinic-name input
@@ -75,10 +77,10 @@ try {
 // -------- 3. Invite user upserts a staff row --------
 await loadFresh();
 try {
-  const settingsLink = page.locator('nav button, aside button, [role="button"]').filter({ hasText: /الإعدادات/ }).first();
+  const settingsLink = page.locator('.nav-item').filter({ hasText: /الإعدادات/ }).first();
   await settingsLink.click({ timeout: 5000 });
   await page.waitForTimeout(300);
-  const usersTab = page.locator('button', { hasText: /المستخدمون|Users/ }).first();
+  const usersTab = page.locator('.nav-item').filter({ hasText: /المستخدمون/ }).first();
   if (await usersTab.count()) await usersTab.click().catch(() => {});
   await page.waitForTimeout(300);
   const inviteBtn = page.locator('button', { hasText: /دعوة مستخدم/ }).first();
@@ -124,7 +126,7 @@ try {
 // -------- 5. Template modal button pre-fills TreatmentPlanCreate --------
 await loadFresh();
 try {
-  const treatmentsLink = page.locator('nav button, aside button, [role="button"]').filter({ hasText: /خطط العلاج|Treatments/ }).first();
+  const treatmentsLink = page.locator('.nav-item').filter({ hasText: /خطط العلاج|Treatments/ }).first();
   await treatmentsLink.click({ timeout: 5000 });
   await page.waitForTimeout(400);
   const templatesBtn = page.locator('button', { hasText: /القوالب/ }).first();
@@ -145,7 +147,7 @@ try {
 // -------- 6. Calendar "اليوم" resets offset --------
 await loadFresh();
 try {
-  const apptsLink = page.locator('nav button, aside button, [role="button"]').filter({ hasText: /المواعيد|Appointments/ }).first();
+  const apptsLink = page.locator('.nav-item').filter({ hasText: /المواعيد|Appointments/ }).first();
   await apptsLink.click({ timeout: 5000 });
   await page.waitForTimeout(400);
   const calTab = page.locator('button', { hasText: /الأسبوع|أسبوع|كالندر|Calendar/i }).first();
@@ -165,7 +167,7 @@ try {
 // -------- 7. RowMenu opens on invoice More --------
 await loadFresh();
 try {
-  const paymentsLink = page.locator('nav button, aside button, [role="button"]').filter({ hasText: /المدفوعات|المدفوعات والفواتير|Payments/ }).first();
+  const paymentsLink = page.locator('.nav-item').filter({ hasText: /المدفوعات|المدفوعات والفواتير|Payments/ }).first();
   await paymentsLink.click({ timeout: 5000 });
   await page.waitForTimeout(400);
   const moreBtns = page.locator('button[title="المزيد"]');
@@ -202,7 +204,7 @@ try {
 // -------- 9. Campaign template pre-fill wiring exists in Campaigns builder --------
 await loadFresh();
 try {
-  const campaignsLink = page.locator('nav button, aside button, [role="button"]').filter({ hasText: /الحملات|Campaigns/ }).first();
+  const campaignsLink = page.locator('.nav-item').filter({ hasText: /حملات|Campaigns/ }).first();
   await campaignsLink.click({ timeout: 5000 });
   await page.waitForTimeout(400);
   const templatesBtn = page.locator('button', { hasText: /القوالب/ }).first();

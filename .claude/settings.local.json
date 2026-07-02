@@ -35,7 +35,15 @@
       "Bash(curl -sf http://127.0.0.1:8123/index.html -o /dev/null)",
       "Bash(curl -s http://127.0.0.1:8123/index.html)",
       "Bash(node --input-type=module -e \"import\\('playwright'\\).then\\(m => console.log\\('ok', Object.keys\\(m\\).slice\\(0,5\\)\\)\\).catch\\(e => console.log\\('missing', e.message.split\\('\\\\n'\\)[0]\\)\\)\")",
-      "Bash(node qa-smoke.mjs)"
+      "Bash(node qa-smoke.mjs)",
+      "Bash(node qa-probe.mjs)",
+      "Bash(curl *)",
+      "Bash(ls *)",
+      "Bash([ -s \"C:\\\\\\\\Users\\\\\\\\bdalr\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bdalr-Desktop-clinksys\\\\\\\\31b85d16-190f-41b6-b6ef-f95d6294ead9\\\\\\\\tasks\\\\\\\\b1ekkxoyy.output\" ])",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\bdalr\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bdalr-Desktop-clinksys\\\\\\\\31b85d16-190f-41b6-b6ef-f95d6294ead9\\\\\\\\tasks\\\\\\\\b1ekkxoyy.output\")",
+      "Bash([ -s \"C:\\\\\\\\Users\\\\\\\\bdalr\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bdalr-Desktop-clinksys\\\\\\\\31b85d16-190f-41b6-b6ef-f95d6294ead9\\\\\\\\tasks\\\\\\\\bmabz4llu.output\" ])",
+      "Bash(grep -q \"passed ===\" \"C:\\\\\\\\Users\\\\\\\\bdalr\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bdalr-Desktop-clinksys\\\\\\\\31b85d16-190f-41b6-b6ef-f95d6294ead9\\\\\\\\tasks\\\\\\\\bmabz4llu.output\")",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\bdalr\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\C--Users-bdalr-Desktop-clinksys\\\\\\\\31b85d16-190f-41b6-b6ef-f95d6294ead9\\\\\\\\tasks\\\\\\\\bmabz4llu.output\")"
     ]
   }
 }

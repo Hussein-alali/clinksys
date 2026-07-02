@@ -1645,7 +1645,7 @@ function SettingsPage({ go }) {
   // Guard: only admins may reach Settings. Everyone else sees a friendly
   // 403 instead of clinic branding, user management, and integration keys.
   const role = (window.ME && window.ME.role) || "";
-  if (role && role !== "admin") {
+  if (role && role !== "مدير") {
     return (
       <Page>
         <div className="crumb"><span>الرئيسية</span><I.Chevron size={11}/><span>الإعدادات</span></div>
