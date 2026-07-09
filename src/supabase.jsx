@@ -295,6 +295,112 @@ async function getSession() {
   return data.session || null;
 }
 
+// ── Admin user management (PRD 4.3) ───────────────────────────
+// A static client holds only the anon key, so it cannot use the
+// service-role admin API (force-set another user's password, delete an
+// auth user). What IS possible with the anon key, and what these do:
+//   • adminCreateUser  → signUp on a SECONDARY client so the admin's own
+//     session is never replaced. Role goes into user_metadata (what RLS
+//     reads) and a linked staff row is written.
+//   • sendPasswordReset → emails a reset link to any address.
+//   • updateOwnPassword / updateOwnProfile → change the CURRENT user's
+//     own credentials/profile via the live session.
+const ROLE_SLUGS = ["admin", "receptionist", "doctor", "therapist"];
+function nextStaffId() {
+  return "U-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+async function adminCreateUser({ email, password, name, role }) {
+  email = (email || "").trim().toLowerCase();
+  const roleSlug = ROLE_SLUGS.includes(role) ? role : "receptionist";
+  const displayName = (name || "").trim() || email.split("@")[0];
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: "بريد إلكتروني غير صحيح" };
+  if (!password || password.length < 6) return { ok: false, error: "كلمة المرور 6 أحرف على الأقل" };
+
+  const staffId = nextStaffId();
+
+  // Demo / offline: create a local staff row only (no auth backend).
+  if (!sb) {
+    await upsertRow("staff", { staff_id: staffId, name: displayName, email, role: roleSlug, phone: null, auth_uid: null });
+    return { ok: true, demo: true };
+  }
+  if (!window.supabase || !window.supabase.createClient) return { ok: false, error: "Supabase غير محمّل" };
+
+  let uid = null, needsConfirm = false;
+  try {
+    // Secondary client: its own (non-persisted) storage so signUp does not
+    // clobber the admin's session.
+    const tmp = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false, storageKey: "kinetic-provision" },
+    });
+    const { data, error } = await tmp.auth.signUp({
+      email, password,
+      options: { data: { role: roleSlug, name: displayName } },
+    });
+    if (error) return { ok: false, error: error.message };
+    uid = (data.user && data.user.id) || null;
+    needsConfirm = !data.session; // no session returned ⇒ email confirmation required
+    // Local scope only: never revoke the new user's server-side tokens.
+    try { await tmp.auth.signOut({ scope: "local" }); } catch {}
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+
+  await upsertRow("staff", { staff_id: staffId, name: displayName, email, role: roleSlug, phone: null, auth_uid: uid });
+  return { ok: true, needsConfirm, uid };
+}
+
+async function sendPasswordReset(email) {
+  email = (email || "").trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: "بريد إلكتروني غير صحيح" };
+  if (!sb) return { ok: true, demo: true };
+  const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+async function updateOwnPassword(newPassword) {
+  if (!newPassword || newPassword.length < 6) return { ok: false, error: "كلمة المرور 6 أحرف على الأقل" };
+  if (!sb) return { ok: true, demo: true };
+  const { error } = await sb.auth.updateUser({ password: newPassword });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+async function updateOwnProfile({ name }) {
+  const displayName = (name || "").trim();
+  if (!displayName) return { ok: false, error: "أدخل الاسم" };
+  if (sb) {
+    const { error } = await sb.auth.updateUser({ data: { name: displayName } });
+    if (error) return { ok: false, error: error.message };
+  }
+  // Mirror onto the staff row + live identity so the UI updates immediately.
+  const me = window.ME || {};
+  if (me.email) {
+    try {
+      const rows = await listTable("staff");
+      const match = (rows || []).find(r => r.email === me.email);
+      if (match) await upsertRow("staff", { ...match, name: displayName });
+    } catch (e) { console.warn("updateOwnProfile staff sync failed", e); }
+  }
+  if (window.ME) window.ME.name = displayName;
+  return { ok: true };
+}
+
+// Update a teammate's staff row (name/role). Note: this changes the app's
+// fallback role + display name, but a user's EFFECTIVE login permissions
+// come from their auth user_metadata.role, which only they (or a
+// service-role admin) can change — surfaced as a hint in the UI.
+async function updateStaffMember(staffId, patch) {
+  try {
+    const rows = await listTable("staff");
+    const match = (rows || []).find(r => (r.staff_id || r.id) === staffId);
+    if (!match) return { ok: false, error: "المستخدم غير موجود" };
+    await upsertRow("staff", { ...match, ...patch });
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message || String(e) }; }
+}
+
 function onAuthChange(cb) {
   if (!sb) return () => {};
   const sub = sb.auth.onAuthStateChange((_evt, session) => cb(session));
@@ -692,6 +798,7 @@ Object.assign(window, {
   loadSections, addSection, updateSection, removeSection,
   loadBranches, addBranch, updateBranch, setActiveBranch, removeBranch,
   signInEmail, signOut, getSession, onAuthChange,
+  adminCreateUser, sendPasswordReset, updateOwnPassword, updateOwnProfile, updateStaffMember,
   startDictation, printHTML, escHtml,
   KineticData,
   uploadPatientFile, listPatientFiles, removePatientFile,
