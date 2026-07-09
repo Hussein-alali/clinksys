@@ -492,7 +492,7 @@ const DATA_TABLES = {
   patients:   { key: "patients",   pk: "patient_id",  ls: "kinetic.patients",
                 cols: ["patient_id","name","phone","age","gender","diagnosis","notes","created_at"] },
   appts:      { key: "bookings",   pk: "booking_id",  ls: "kinetic.bookings",
-                cols: ["booking_id","patient_id","therapist_id","date","time","status","notes","created_at"] },
+                cols: ["booking_id","patient_id","therapist_id","doctor_id","department_id","date","time","status","notes","created_at"] },
   sessions:   { key: "sessions",   pk: "session_id",  ls: "kinetic.sessions",
                 cols: ["session_id","patient_id","therapist_id","date","pain_score","session_notes","session_number","created_at"] },
   payments:   { key: "invoices",   pk: "invoice_id",  ls: "kinetic.invoices",
@@ -501,6 +501,10 @@ const DATA_TABLES = {
                 cols: ["staff_id","name","role","phone","email","auth_uid"] },
   therapists: { key: "therapists", pk: "id",          ls: "kinetic.therapists",
                 cols: ["id","name","spec","load","max","color"] },
+  departments:{ key: "departments",pk: "id",          ls: "kinetic.departments",
+                cols: ["id","name_ar","name_en","description","icon","color","sort_order","active"] },
+  doctors:    { key: "doctors",    pk: "id",          ls: "kinetic.doctors",
+                cols: ["id","name","department_id","specialization","experience_years","photo","schedule","status","color","active"] },
   packages:   { key: "packages",   pk: "id",          ls: "kinetic.packages",
                 cols: ["id","name","sessions","price","active","popular","color","sold"] },
   campaigns:  { key: "campaigns",  pk: "id",          ls: "kinetic.campaigns",
@@ -607,6 +611,14 @@ function normalizeDomainData(D) {
       || (D.staff || []).find(x => x.staff_id === tid);
     return t ? t.name : "";
   };
+  const nameOfDoctor = (did) => {
+    const d = (D.doctors || []).find(x => x.id === did);
+    return d ? d.name : "";
+  };
+  const nameOfDept = (deid) => {
+    const d = (D.departments || []).find(x => x.id === deid);
+    return d ? d.name_ar : "";
+  };
   D.patients = patients.map(p => ({
     ...p,
     id: p.patient_id ?? p.id,
@@ -624,7 +636,9 @@ function normalizeDomainData(D) {
     pid: a.pid ?? a.patient_id ?? null,
     patient: a.patient ?? (nameOfPatient(a.patient_id) || "—"),
     th: a.th ?? nameOfTherapist(a.therapist_id),
-    dr: a.dr ?? "", time: a.time ?? "", dur: a.dur ?? 30,
+    dr: a.dr ?? nameOfDoctor(a.doctor_id),
+    dept: a.dept ?? nameOfDept(a.department_id),
+    time: a.time ?? "", dur: a.dur ?? 30,
     room: a.room ?? "", type: a.type ?? "",
     status: BOOKING_STATUS_AR[a.status] ?? a.status ?? "معلّق",
   }));
