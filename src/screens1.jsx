@@ -1611,7 +1611,6 @@ function CalendarView({ dateOffset, setDateOffset }) {
         </div>
         <div style={{flex:1}}/>
         <span className="muted" style={{fontSize:12}}>اسحب المواعيد لإعادة جدولتها</span>
-        <button className="btn btn-blue"><I.Plus size={14}/> حجز</button>
       </div>
 
       <div className="tbl-scroll">
