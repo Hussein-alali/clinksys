@@ -1715,7 +1715,7 @@ function OperationalReport() {
   const utilization = appts.length ? Math.round(booked.length / appts.length * 100) : 0;
 
   // By weekday (bookings carry a date in production).
-  const wd = ["أحد","إثن","ثلا","أرب","خمي","جمع","سبت"];
+  const wd = ["الأحد","الأثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
   const byDay = wd.map(l => ({ label:l, v:0, color:"#7BBDE8" }));
   booked.forEach(a => { if (a.date) { const d = new Date(a.date); if (!isNaN(d)) byDay[d.getDay()].v += 1; } });
 

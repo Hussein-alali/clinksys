@@ -48,16 +48,12 @@ begin
       uid,
       'authenticated',
       'authenticated',
-      'amir@kinetic.eg',
-      crypt('Amir@2026!', gen_salt('bf')),
+      'amr@clinic.eg',
+      crypt('Amr@2026!', gen_salt('bf')),
       now(),
       '{"provider":"email","providers":["email"]}'::jsonb,
       '{"role":"admin","name":"أمير"}'::jsonb,
-      now(), now(),
-      '', '',
-      '', '', '',
-      '', '', '',
-      false
+      now(), now()
     );
 
     insert into auth.identities (
@@ -67,7 +63,7 @@ begin
       gen_random_uuid(),
       uid,
       uid::text,
-      jsonb_build_object('sub', uid::text, 'email', 'amir@kinetic.eg', 'email_verified', true),
+      jsonb_build_object('sub', uid::text, 'email', 'amr@clinic.eg', 'email_verified', true),
       'email',
       now(), now(), now()
     );
@@ -91,7 +87,7 @@ begin
   where email = 'amir@kinetic.eg';
 
   insert into staff (staff_id, name, role, email, auth_uid)
-  values ('ST-AMIR', 'أمير', 'admin', 'amir@kinetic.eg', uid)
+  values ('ST-AMR', 'عمرو', 'admin', 'amr@clinic.eg', uid)
   on conflict (staff_id) do update
     set auth_uid = excluded.auth_uid,
         role     = 'admin',
