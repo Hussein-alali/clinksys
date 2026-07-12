@@ -455,13 +455,29 @@ async function adminCreateUser({ email, password, name, role, phone }) {
     if (data && data.ok === false) {
       return { ok: false, error: __friendlyAuthError(data.error, data.detail) };
     }
-    // Only "function not found" (404 / FunctionsFetchError) should trip
-    // the fallback — every other error is authoritative.
-    const msg = String((error && (error.message || error.name)) || "").toLowerCase();
+    // A deployed function that answered 4xx/5xx surfaces as
+    // FunctionsHttpError with `data` undefined — its JSON body (our
+    // { ok:false, error, detail }) is only reachable via error.context.
+    // Read it so real failures (forbidden / email_exists / …) are shown
+    // instead of tripping the signUp fallback.
+    if (error && error.name === "FunctionsHttpError" && error.context && error.context.json) {
+      try {
+        const body = await error.context.json();
+        if (body && body.error) return { ok: false, error: __friendlyAuthError(body.error, body.detail) };
+      } catch { /* non-JSON response — fall through to detection below */ }
+    }
+    // Only "function unreachable / not deployed" should trip the
+    // fallback — every other error is authoritative. supabase-js reports
+    // an undeployed function as FunctionsFetchError with the message
+    // "Failed to send a request to the Edge Function", so check the
+    // error NAME as well as the message.
+    const msg = (String((error && error.message) || "") + " " +
+                 String((error && error.name) || "")).toLowerCase();
     const missing = msg.includes("not found") || msg.includes("failed to fetch") ||
-                    msg.includes("functionsfetch") || msg.includes("not deployed");
+                    msg.includes("failed to send") || msg.includes("functionsfetch") ||
+                    msg.includes("functionsrelay") || msg.includes("not deployed");
     if (!missing) return { ok: false, error: __friendlyAuthError(null, error && error.message) };
-    console.info("admin-create-user edge function not deployed — falling back to signUp");
+    console.info("admin-create-user edge function not reachable — falling back to signUp", msg);
   } catch (e) {
     console.info("edge function unavailable, using signUp fallback", e);
   }
@@ -493,13 +509,23 @@ async function adminCreateUser({ email, password, name, role, phone }) {
     return { ok: false, error: __friendlyAuthError(null, e.message || String(e)) };
   }
 
+  // The staff row is what public.app_role() reads — without it the new
+  // account can log in but has NO permissions. Surface a failed insert
+  // loudly instead of pretending the account is ready.
   const staffId = nextStaffId();
-  await upsertRow("staff", {
+  const staffRes = await upsertRow("staff", {
     staff_id: staffId, name: displayName, email, role: roleSlug,
     phone: phone || null, auth_uid: uid, status: "active",
     created_by: (window.ME && window.ME.id) || null,
     created_at: new Date().toISOString(),
   });
+  if (!staffRes || staffRes._ok === false) {
+    return {
+      ok: false, uid, needsConfirm,
+      error: __friendlyAuthError("staff_insert_failed", staffRes && staffRes._error) +
+             (staffRes && staffRes._error ? ` — ${staffRes._error}` : ""),
+    };
+  }
   window.dispatchEvent(new CustomEvent("kinetic:data-updated", { detail: { table: "staff" } }));
   return { ok: true, needsConfirm, uid };
 }
