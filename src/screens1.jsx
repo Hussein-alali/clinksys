@@ -484,9 +484,14 @@ Object.assign(window, { Dashboard, ApptBadge, PayBadge, todayLabelAr, activeBran
 // المريض management — list, details, add/edit
 
 function Patients({ go }) {
+  // Subscribe to data-updated events so the list re-renders whenever the
+  // edit modal (or any other mutation) writes back to the DB.
+  window.useDataVersion && window.useDataVersion();
+
   // ── State ──
   const [view, setView] = React.useState("list"); // list | detail | add
   const [selected, setSelected] = React.useState(null);
+  const [editing, setEditing] = React.useState(null); // patient row being edited
   const [search, setSearch] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState("الكل");
   const [page, setPage] = React.useState(1);
@@ -589,7 +594,7 @@ function Patients({ go }) {
                   <td><PayBadge s={p.payment}/></td>
                   <td onClick={e=>e.stopPropagation()}>
                     <button className="btn btn-ghost btn-icon" onClick={()=>{setSelected(p);setView("detail")}}><I.Eye size={14}/></button>
-                    <button className="btn btn-ghost btn-icon" onClick={()=>{setSelected(p);setView("add");}}><I.Edit size={14}/></button>
+                    <button className="btn btn-ghost btn-icon" title="تعديل بيانات المريض" onClick={()=>setEditing(p)}><I.Edit size={14}/></button>
                     <button className="btn btn-ghost btn-icon" onClick={()=>setConfirmDelete(p)} style={{color:"var(--red)"}}><I.Trash size={14}/></button>
                   </td>
                 </tr>
@@ -659,8 +664,399 @@ function Patients({ go }) {
         <p>أنت على وشك حذف <strong>{confirmDelete?.name}</strong> ({confirmDelete?.id}). This will remove all Sessions, invoices and uploads associated مع this patient.</p>
         <p className="muted" style={{fontSize:12.5,marginTop:8}}>لا يمكن التراجع عن هذا الإجراء. فكّر في أرشفة المريض بدلًا من حذفه.</p>
       </Modal>
+
+      {editing && (
+        <PatientEditModal
+          patient={editing}
+          onClose={()=>setEditing(null)}
+          onSaved={()=>setEditing(null)}
+        />
+      )}
     </Page>
   );
+}
+
+// ── PatientEditModal ───────────────────────────────────────────
+// Full edit workflow: re-reads the row from the DB on open (never
+// trusts the cached snapshot the caller passed in), enforces role
+// permissions, validates, persists via KineticData.upsert (which
+// dispatches `kinetic:data-updated` so every subscribed view — the
+// patients list, PatientProfile, PatientDetail, dashboards — refreshes
+// without a page reload), and writes an audit_events row capturing the
+// diff (old vs new per field).
+function PatientEditModal({ patient, onClose, onSaved }) {
+  const role = (window.ME && window.ME.role) || "مدير";
+  const isAdmin       = role === "مدير";
+  const isReception   = role === "موظف استقبال";
+  const isDoctor      = role === "طبيب";
+  const isTherapist   = role === "الأخصائي";
+  // Role-based edit permissions per PRD §8.
+  const canEdit = {
+    demographics: isAdmin || isReception,       // name, phone, id, contact, address
+    medical:      isAdmin || isDoctor,          // diagnosis, allergies, meds, history, insurance
+    therapy:      isAdmin || isDoctor || isTherapist, // therapist assignment, notes, status
+  };
+
+  const pid = patient.patient_id || patient.id;
+  const [form, setForm]   = React.useState(null);
+  const [original, setOrig] = React.useState(null);
+  const [busy, setBusy]   = React.useState(false);
+  const [loading, setLoading] = React.useState(true);
+  const [errors, setErrors] = React.useState({});
+
+  // ── Load fresh from the DB (source of truth). Fall back to the row
+  // passed in only if the network read fails outright, so the modal
+  // still opens in offline/demo mode.
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        let fresh = null;
+        if (window.KineticData && window.KineticData.list) {
+          const rows = await window.KineticData.list("patients");
+          fresh = (rows || []).find(r => (r.patient_id || r.id) === pid) || null;
+        }
+        if (!fresh) fresh = patient;
+        if (!cancelled) {
+          const norm = normalizePatientForForm(fresh);
+          setForm(norm);
+          setOrig(norm);
+          setLoading(false);
+        }
+      } catch (e) {
+        console.warn("patient reload failed", e);
+        if (!cancelled) {
+          const norm = normalizePatientForForm(patient);
+          setForm(norm); setOrig(norm); setLoading(false);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pid]);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Derived age from DOB (kept in sync so the "Age" input isn't a lie).
+  const derivedAge = React.useMemo(() => {
+    if (!form || !form.date_of_birth) return "";
+    const d = new Date(form.date_of_birth);
+    if (isNaN(d)) return "";
+    const now = new Date();
+    let a = now.getFullYear() - d.getFullYear();
+    const m = now.getMonth() - d.getMonth();
+    if (m < 0 || (m === 0 && now.getDate() < d.getDate())) a--;
+    return a >= 0 && a < 130 ? String(a) : "";
+  }, [form && form.date_of_birth]);
+
+  function validate() {
+    const e = {};
+    if (!form.name || !form.name.trim()) e.name = "الاسم مطلوب";
+    if (!form.phone || !form.phone.trim()) e.phone = "الهاتف مطلوب";
+    else if (!/^[+\d][\d\s\-()]{6,}$/.test(form.phone.trim())) e.phone = "رقم هاتف غير صحيح";
+    if (form.whatsapp && !/^[+\d][\d\s\-()]{6,}$/.test(form.whatsapp.trim())) e.whatsapp = "رقم واتساب غير صحيح";
+    if (form.emergency_phone && !/^[+\d][\d\s\-()]{6,}$/.test(form.emergency_phone.trim())) e.emergency_phone = "رقم طوارئ غير صحيح";
+    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) e.email = "بريد إلكتروني غير صحيح";
+    // Duplicate-check across the local cache — the DB unique index gives us
+    // the authoritative rejection on save, but this catches it earlier.
+    const others = ((window.DATA && window.DATA.patients) || []).filter(x => (x.patient_id || x.id) !== pid);
+    if (form.national_id && form.national_id.trim() &&
+        others.some(x => (x.national_id || "").trim() === form.national_id.trim())) {
+      e.national_id = "الرقم القومي مستخدم لمريض آخر";
+    }
+    if (form.medical_file_no && form.medical_file_no.trim() &&
+        others.some(x => (x.medical_file_no || "").trim() === form.medical_file_no.trim())) {
+      e.medical_file_no = "رقم الملف مستخدم لمريض آخر";
+    }
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  }
+
+  async function save() {
+    if (!validate()) {
+      if (window.showToast) window.showToast("راجع الحقول المُظللة", "error");
+      return;
+    }
+    setBusy(true);
+    try {
+      // Compute the diff so the audit payload only carries what changed.
+      const changed = {};
+      for (const k of Object.keys(form)) {
+        const a = original[k] == null ? "" : String(original[k]);
+        const b = form[k]     == null ? "" : String(form[k]);
+        if (a !== b) changed[k] = { old: original[k] ?? null, new: form[k] ?? null };
+      }
+      if (Object.keys(changed).length === 0) {
+        if (window.showToast) window.showToast("لا تغييرات للحفظ", "info");
+        setBusy(false); return;
+      }
+
+      // Build the row to persist. Only fields present in the DB whitelist
+      // will actually round-trip to Supabase; UI-only fields are ignored
+      // by KineticData.upsert.
+      const row = {
+        patient_id:      pid,
+        id:              pid,
+        name:            form.name.trim(),
+        phone:           form.phone.trim(),
+        whatsapp:        strOrNull(form.whatsapp),
+        email:           strOrNull(form.email),
+        age:             form.age === "" || form.age == null ? null : Number(form.age),
+        gender:          form.gender || null,
+        date_of_birth:   strOrNull(form.date_of_birth),
+        address:         strOrNull(form.address),
+        occupation:      strOrNull(form.occupation),
+        emergency_name:  strOrNull(form.emergency_name),
+        emergency_phone: strOrNull(form.emergency_phone),
+        doctor_id:       strOrNull(form.doctor_id),
+        therapist_id:    strOrNull(form.therapist_id),
+        diagnosis:       strOrNull(form.diagnosis),
+        medical_history: strOrNull(form.medical_history),
+        allergies:       strOrNull(form.allergies),
+        medications:     strOrNull(form.medications),
+        insurance_info:  strOrNull(form.insurance_info),
+        notes:           strOrNull(form.notes),
+        status:          form.status || "نشط",
+        medical_file_no: strOrNull(form.medical_file_no),
+        national_id:     strOrNull(form.national_id),
+        // Preserve UI-mirrored display fields so cached list rows still render:
+        diag:            strOrNull(form.diagnosis),
+        dr:              form.dr || patient.dr || "",
+        th:              form.th || patient.th || "",
+        updated_at:      new Date().toISOString(),
+      };
+
+      // KineticData.upsert already handles LS + memory + Supabase and
+      // dispatches `kinetic:data-updated`, which every useDataVersion()
+      // consumer (Patients list, PatientProfile, dashboards) listens to.
+      if (window.KineticData) {
+        await window.KineticData.upsert("patients", row);
+      }
+
+      // Audit trail: best-effort. Failing to write the audit row must NOT
+      // roll back the patient update — the patient edit is the primary
+      // action; audit is a secondary observability record.
+      try {
+        if (window.sb || (typeof sb !== "undefined" && sb)) {
+          const client = window.sb || sb;
+          const uid = (window.ME && window.ME.id) || null;
+          await client.from("audit_events").insert({
+            actor_uid:  uid,
+            actor_role: role,
+            action:     "patient.edit",
+            table_name: "patients",
+            row_pk:     pid,
+            payload:    { changed, at: new Date().toISOString() },
+          });
+        }
+      } catch (auditErr) {
+        console.warn("audit write failed (non-fatal)", auditErr);
+      }
+
+      if (window.showToast) window.showToast("تم حفظ بيانات المريض", "success");
+      onSaved && onSaved(row);
+    } catch (e) {
+      console.warn("patient edit failed", e);
+      const msg = (e && e.message) || "تعذّر الحفظ";
+      // Keep the modal open with the user's changes intact so nothing is
+      // lost after a failed save.
+      if (window.showToast) window.showToast(msg, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading || !form) {
+    return (
+      <Modal open onClose={onClose} title="تعديل بيانات المريض" width={780}>
+        <div className="muted" style={{padding:20,textAlign:"center"}}>جارٍ تحميل البيانات من قاعدة البيانات…</div>
+      </Modal>
+    );
+  }
+
+  const doctors    = (DATA.doctors    || []).filter(d => d.active !== false);
+  const therapists = DATA.therapists || [];
+
+  const dis = (allowed) => allowed ? undefined : { disabled: true, style:{background:"var(--ink-50)",cursor:"not-allowed"} };
+  const errStyle = (k) => errors[k] ? { border:"1px solid var(--red)" } : {};
+
+  return (
+    <Modal open onClose={onClose} title={`تعديل بيانات المريض · ${form.name || pid}`} width={860}
+      footer={<>
+        <button className="btn btn-secondary" onClick={onClose} disabled={busy}>إلغاء</button>
+        <button className="btn btn-blue" onClick={save} disabled={busy}>
+          {busy ? "جارٍ الحفظ…" : (<><I.Check size={13}/> حفظ التغييرات</>)}
+        </button>
+      </>}>
+      <div className="muted" style={{fontSize:12,marginBottom:14}}>
+        الدور: <strong>{role}</strong> · الحقول غير المسموح لك بتعديلها معطلة.
+      </div>
+
+      <div className="h3" style={{marginBottom:10,fontSize:13,letterSpacing:".05em",textTransform:"uppercase",color:"var(--ink-500)"}}>معرفات</div>
+      <div className="rgrid c-sm" style={{"--gtc":"repeat(2,1fr)",gap:12,marginBottom:18}}>
+        <Field label="رقم المريض"><input className="input mono" value={pid} readOnly {...dis(false)}/></Field>
+        <Field label="رقم الملف الطبي">
+          <input className="input" value={form.medical_file_no || ""} onChange={e=>set("medical_file_no", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("medical_file_no")}/>
+          {errors.medical_file_no && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.medical_file_no}</div>}
+        </Field>
+        <Field label="الرقم القومي / جواز السفر">
+          <input className="input" value={form.national_id || ""} onChange={e=>set("national_id", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("national_id")}/>
+          {errors.national_id && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.national_id}</div>}
+        </Field>
+        <Field label="الحالة">
+          <select className="input" value={form.status || "نشط"} onChange={e=>set("status", e.target.value)}
+                  {...dis(canEdit.therapy)}>
+            {["نشط","غير نشط","مؤرشف","غير مكتمل"].map(s=><option key={s}>{s}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <div className="h3" style={{marginBottom:10,fontSize:13,letterSpacing:".05em",textTransform:"uppercase",color:"var(--ink-500)"}}>البيانات الشخصية والاتصال</div>
+      <div className="rgrid c-sm" style={{"--gtc":"repeat(2,1fr)",gap:12,marginBottom:18}}>
+        <Field label="الاسم الكامل" required span={2}>
+          <input className="input" value={form.name || ""} onChange={e=>set("name", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("name")}/>
+          {errors.name && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.name}</div>}
+        </Field>
+        <Field label="الهاتف" required>
+          <input className="input" value={form.phone || ""} onChange={e=>set("phone", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("phone")}/>
+          {errors.phone && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.phone}</div>}
+        </Field>
+        <Field label="واتساب">
+          <input className="input" value={form.whatsapp || ""} onChange={e=>set("whatsapp", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("whatsapp")}/>
+          {errors.whatsapp && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.whatsapp}</div>}
+        </Field>
+        <Field label="البريد الإلكتروني">
+          <input className="input" type="email" value={form.email || ""} onChange={e=>set("email", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("email")}/>
+          {errors.email && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.email}</div>}
+        </Field>
+        <Field label="الجنس">
+          <select className="input" value={form.gender || ""} onChange={e=>set("gender", e.target.value)}
+                  {...dis(canEdit.demographics)}>
+            <option value="">—</option>
+            <option value="F">أنثى</option>
+            <option value="M">ذكر</option>
+          </select>
+        </Field>
+        <Field label="تاريخ الميلاد">
+          <input className="input" type="date" value={form.date_of_birth || ""} onChange={e=>set("date_of_birth", e.target.value)}
+                 {...dis(canEdit.demographics)}/>
+        </Field>
+        <Field label="العمر" hint={derivedAge ? `مشتق من تاريخ الميلاد: ${derivedAge}` : ""}>
+          <input className="input" type="number" value={form.age || ""} onChange={e=>set("age", e.target.value)}
+                 {...dis(canEdit.demographics)}/>
+        </Field>
+        <Field label="المهنة">
+          <input className="input" value={form.occupation || ""} onChange={e=>set("occupation", e.target.value)}
+                 {...dis(canEdit.demographics)}/>
+        </Field>
+        <Field label="العنوان" span={2}>
+          <input className="input" value={form.address || ""} onChange={e=>set("address", e.target.value)}
+                 {...dis(canEdit.demographics)}/>
+        </Field>
+        <Field label="جهة الطوارئ">
+          <input className="input" value={form.emergency_name || ""} onChange={e=>set("emergency_name", e.target.value)}
+                 {...dis(canEdit.demographics)}/>
+        </Field>
+        <Field label="هاتف الطوارئ">
+          <input className="input" value={form.emergency_phone || ""} onChange={e=>set("emergency_phone", e.target.value)}
+                 {...dis(canEdit.demographics)} style={errStyle("emergency_phone")}/>
+          {errors.emergency_phone && <div style={{color:"var(--red)",fontSize:11,marginTop:3}}>{errors.emergency_phone}</div>}
+        </Field>
+      </div>
+
+      <div className="h3" style={{marginBottom:10,fontSize:13,letterSpacing:".05em",textTransform:"uppercase",color:"var(--ink-500)"}}>الطاقم المعالج والتشخيص</div>
+      <div className="rgrid c-sm" style={{"--gtc":"repeat(2,1fr)",gap:12,marginBottom:18}}>
+        <Field label="الطبيب المسؤول">
+          <select className="input" value={form.doctor_id || ""} onChange={e=>{
+            const id = e.target.value;
+            const d = doctors.find(x => x.id === id);
+            set("doctor_id", id); if (d) set("dr", d.name);
+          }} {...dis(canEdit.therapy)}>
+            <option value="">— بدون —</option>
+            {doctors.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+        </Field>
+        <Field label="الأخصائي المسؤول">
+          <select className="input" value={form.therapist_id || ""} onChange={e=>{
+            const id = e.target.value;
+            const t = therapists.find(x => (x.staff_id || x.id) === id);
+            set("therapist_id", id); if (t) set("th", t.name);
+          }} {...dis(canEdit.therapy)}>
+            <option value="">— بدون —</option>
+            {therapists.map(t => <option key={t.staff_id||t.id} value={t.staff_id||t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="التشخيص" span={2}>
+          <input className="input" value={form.diagnosis || ""} onChange={e=>set("diagnosis", e.target.value)}
+                 {...dis(canEdit.medical)}/>
+        </Field>
+        <Field label="التاريخ المرضي" span={2}>
+          <textarea className="input" style={{minHeight:60,padding:10,resize:"vertical"}}
+                    value={form.medical_history || ""} onChange={e=>set("medical_history", e.target.value)}
+                    {...dis(canEdit.medical)}/>
+        </Field>
+        <Field label="الحساسية">
+          <input className="input" value={form.allergies || ""} onChange={e=>set("allergies", e.target.value)}
+                 {...dis(canEdit.medical)}/>
+        </Field>
+        <Field label="الأدوية الحالية">
+          <input className="input" value={form.medications || ""} onChange={e=>set("medications", e.target.value)}
+                 {...dis(canEdit.medical)}/>
+        </Field>
+        <Field label="التأمين" span={2}>
+          <input className="input" value={form.insurance_info || ""} onChange={e=>set("insurance_info", e.target.value)}
+                 {...dis(canEdit.medical)}/>
+        </Field>
+        <Field label="ملاحظات العلاج / متابعة الجلسات" span={2}>
+          <textarea className="input" style={{minHeight:70,padding:10,resize:"vertical"}}
+                    value={form.notes || ""} onChange={e=>set("notes", e.target.value)}
+                    {...dis(canEdit.therapy)}/>
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function strOrNull(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s === "" ? null : s;
+}
+// Coerce a DB row into a friendly form shape. Guarantees every field the
+// modal renders has a defined key so React never toggles between
+// controlled/uncontrolled inputs.
+function normalizePatientForForm(p) {
+  return {
+    name:            p.name || "",
+    phone:           p.phone || "",
+    whatsapp:        p.whatsapp || "",
+    email:           p.email || "",
+    age:             p.age != null ? String(p.age) : "",
+    gender:          p.gender || "",
+    date_of_birth:   p.date_of_birth ? String(p.date_of_birth).slice(0,10) : "",
+    address:         p.address || "",
+    occupation:      p.occupation || p.job || "",
+    emergency_name:  p.emergency_name || "",
+    emergency_phone: p.emergency_phone || "",
+    doctor_id:       p.doctor_id || "",
+    therapist_id:    p.therapist_id || "",
+    diagnosis:       p.diagnosis || p.diag || "",
+    medical_history: p.medical_history || "",
+    allergies:       p.allergies || "",
+    medications:     p.medications || p.meds || "",
+    insurance_info:  p.insurance_info || "",
+    notes:           p.notes || "",
+    status:          p.status || "نشط",
+    medical_file_no: p.medical_file_no || "",
+    national_id:     p.national_id || "",
+    dr:              p.dr || "",
+    th:              p.th || "",
+  };
 }
 
 // ── PatientDetail ──────────────────────────────────────────────
@@ -1291,18 +1687,9 @@ function PatientFiles({ p }) {
 }
 
 function PatientInvoices({ p }) {
-  window.useDataVersion && window.useDataVersion();
   const [newInvoiceOpen, setNewInvoiceOpen] = React.useState(false);
-  const [payTarget, setPayTarget]           = React.useState(null); // invoice
-  const [historyTarget, setHistoryTarget]   = React.useState(null); // invoice
   const pid = p.patient_id || p.id;
   const invoices = DATA.payments.filter(x => x.patient === p.name || x.patient_id === pid);
-  // Role gating — matches PRD table:
-  //   Admin / Receptionist → can receive payments.
-  //   Doctor / Therapist   → view only.
-  const meRole = (window.ME && (window.ME.role || "")) || "";
-  const canReceive = meRole === "مدير" || meRole === "admin"
-                  || meRole === "استقبال" || meRole === "receptionist";
   return (
     <div>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
@@ -1311,382 +1698,28 @@ function PatientInvoices({ p }) {
       </div>
       <div className="tbl-scroll">
       <table className="tbl">
-        <thead><tr><th>فاتورة</th><th>التاريخ</th><th>المبلغ</th><th>مدفوع</th><th>المتبقي</th><th>الطريقة</th><th>الحالة</th><th></th></tr></thead>
+        <thead><tr><th>فاتورة</th><th>التاريخ</th><th>المبلغ</th><th>مدفوع</th><th>الطريقة</th><th>الحالة</th><th></th></tr></thead>
         <tbody>
-          {invoices.length ? invoices.map(inv=>{
-            const total    = Number(inv.amount || 0);
-            const paid     = Number(inv.paid   || 0);
-            const remain   = Math.max(0, total - paid);
-            const paidFull = remain <= 0.0001 || inv.status === "مدفوع";
-            return (
+          {invoices.length ? invoices.map(inv=>(
             <tr key={inv.id}>
               <td className="mono">{inv.id}</td>
               <td>{inv.date}</td>
-              <td className="mono">EGP {total.toLocaleString()}</td>
-              <td className="mono">EGP {paid.toLocaleString()}</td>
-              <td className="mono" style={{color: remain>0 ? "var(--amber)" : "var(--ink-500)"}}>EGP {remain.toLocaleString()}</td>
+              <td className="mono">EGP {inv.amount.toLocaleString()}</td>
+              <td className="mono">EGP {inv.paid.toLocaleString()}</td>
               <td>{inv.method}</td>
               <td><PayBadge s={inv.status}/></td>
-              <td style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                {!paidFull && canReceive && (
-                  <button className="btn btn-blue" style={{fontSize:11.5,padding:"5px 10px"}} onClick={()=>setPayTarget(inv)}>
-                    <I.CreditCard size={12}/> دفع
-                  </button>
-                )}
-                <button className="btn btn-ghost btn-icon" title="سجل الدفعات" onClick={()=>setHistoryTarget(inv)}><I.Clock size={13}/></button>
-                <button className="btn btn-ghost btn-icon" title="تحميل" onClick={()=>{
-                  const rows = ["فاتورة,التاريخ,المبلغ,مدفوع,المتبقي,الطريقة,الحالة",
-                    `${inv.id},${inv.date},${total},${paid},${remain},${inv.method},${inv.status}`];
-                  downloadCsv(rows, `${inv.id}.csv`);
-                  if (window.showToast) window.showToast("تم تحميل الفاتورة", "success");
-                }}><I.Download size={13}/></button>
-              </td>
+              <td><button className="btn btn-ghost btn-icon" onClick={()=>{
+                const rows = ["فاتورة,التاريخ,المبلغ,مدفوع,الطريقة,الحالة", `${inv.id},${inv.date},${inv.amount},${inv.paid},${inv.method},${inv.status}`];
+                downloadCsv(rows, `${inv.id}.csv`);
+                if (window.showToast) window.showToast("تم تحميل الفاتورة", "success");
+              }}><I.Download size={13}/></button></td>
             </tr>
-            );
-          }) : <tr><td colSpan={8}><EmptyState icon={<I.FileText size={22}/>} title="لا توجد فواتير بعد" body="ستظهر الفواتير هنا بعد إنشائها أو إغلاق جلسة."/></td></tr>}
+          )) : <tr><td colSpan={7}><EmptyState icon={<I.FileText size={22}/>} title="لا توجد فواتير بعد" body="invoices appear here once you create them or a جلسة is checked out."/></td></tr>}
         </tbody>
       </table>
       </div>
       {newInvoiceOpen && <NewInvoiceModal onClose={()=>setNewInvoiceOpen(false)}/>}
-      {payTarget && (
-        <ReceivePaymentModal
-          invoice={payTarget}
-          patient={p}
-          onClose={()=>setPayTarget(null)}
-          onDone={()=>setPayTarget(null)}
-        />
-      )}
-      {historyTarget && (
-        <InvoicePaymentHistoryModal
-          invoice={historyTarget}
-          onClose={()=>setHistoryTarget(null)}
-        />
-      )}
     </div>
-  );
-}
-
-// ── ReceivePaymentModal ───────────────────────────────────────
-// Full-flow payment capture with receipt upload. All persistence is
-// funnelled through window.PaymentReceipts.receive which chains the
-// storage upload + record_quick_payment RPC + payment_receipts insert.
-function ReceivePaymentModal({ invoice, patient, onClose, onDone }) {
-  const total     = Number(invoice.amount || 0);
-  const paidSoFar = Number(invoice.paid   || 0);
-  const remaining = Math.max(0, total - paidSoFar);
-
-  const [amount, setAmount]         = React.useState(String(remaining));
-  const [method, setMethod]         = React.useState("نقدي");
-  const [reference, setReference]   = React.useState("");
-  const [txId, setTxId]             = React.useState("");
-  const [notes, setNotes]           = React.useState("");
-  const [file, setFile]             = React.useState(null);
-  const [previewUrl, setPreviewUrl] = React.useState("");
-  const [uploading, setUploading]   = React.useState(false);
-  const [submitting, setSubmitting] = React.useState(false);
-  const [confirmOpen, setConfirmOpen] = React.useState(false);
-  const [error, setError]           = React.useState("");
-  const fileRef = React.useRef(null);
-
-  React.useEffect(() => {
-    if (!file) { setPreviewUrl(""); return; }
-    if (file.type && file.type.startsWith("image/")) {
-      const url = URL.createObjectURL(file);
-      setPreviewUrl(url);
-      return () => URL.revokeObjectURL(url);
-    }
-    setPreviewUrl("");
-  }, [file]);
-
-  const amt = Number(amount);
-  const remainingAfter = Math.max(0, remaining - (amt > 0 ? amt : 0));
-  const nextStatus = remainingAfter <= 0.0001 ? "مدفوع" : "جزئي";
-
-  function validate() {
-    if (!(amt > 0)) return "المبلغ يجب أن يكون أكبر من صفر";
-    if (amt > remaining + 0.0001) return "المبلغ يتجاوز الرصيد المتبقي";
-    if (!method) return "اختر طريقة الدفع";
-    if (file) {
-      const v = window.PaymentReceipts && window.PaymentReceipts.validate(file);
-      if (v) return v;
-    }
-    return null;
-  }
-
-  async function submit() {
-    const v = validate();
-    if (v) { setError(v); return; }
-    setError("");
-    setSubmitting(true);
-    try {
-      const res = await window.PaymentReceipts.receive({
-        invoice, patient,
-        amount: amt,
-        method,
-        reference: reference.trim(),
-        transaction_id: txId.trim(),
-        notes: notes.trim(),
-        file,
-      });
-      if (!res.ok) {
-        setError(res.error || "تعذّر تسجيل الدفع");
-        setSubmitting(false);
-        return;
-      }
-      if (window.showToast) {
-        if (res.warning) window.showToast(res.warning, "info");
-        else window.showToast("تم تسجيل عملية الدفع بنجاح", "success");
-      }
-      setSubmitting(false);
-      setConfirmOpen(false);
-      onDone && onDone(res);
-    } catch (e) {
-      console.warn("payment submit failed", e);
-      setError("حدث خطأ أثناء تسجيل الدفع");
-      setSubmitting(false);
-    }
-  }
-
-  function onPickFile(e) {
-    const f = (e.target.files || [])[0];
-    e.target.value = "";
-    if (!f) return;
-    const v = window.PaymentReceipts && window.PaymentReceipts.validate(f);
-    if (v) { setError(v); return; }
-    setError("");
-    setFile(f);
-  }
-
-  return (
-    <>
-    <Modal open onClose={submitting?()=>{}:onClose} width={620} title={`دفع الفاتورة ${invoice.id}`}>
-      <div style={{display:"grid",gap:12,fontSize:13}}>
-        {/* Invoice summary */}
-        <div className="card card-pad" style={{background:"var(--ink-50)",padding:12}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-            <Row k="رقم الفاتورة" v={<span className="mono">{invoice.id}</span>}/>
-            <Row k="المريض"        v={patient.name || invoice.patient || "—"}/>
-            <Row k="تاريخ الفاتورة" v={invoice.date || "—"}/>
-            <Row k="الحالة"        v={<PayBadge s={invoice.status}/>}/>
-            <Row k="إجمالي الفاتورة" v={<span className="mono">EGP {total.toLocaleString()}</span>}/>
-            <Row k="المدفوع"        v={<span className="mono">EGP {paidSoFar.toLocaleString()}</span>}/>
-            <Row k="المتبقي"        v={<span className="mono" style={{color:"var(--amber)",fontWeight:600}}>EGP {remaining.toLocaleString()}</span>}/>
-          </div>
-        </div>
-
-        {/* Amount */}
-        <Field label="مبلغ الدفع (EGP)">
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <input className="input" type="number" min="0.01" step="0.01"
-              value={amount} onChange={e=>setAmount(e.target.value)}/>
-            <button className="btn btn-secondary" style={{fontSize:12,whiteSpace:"nowrap"}}
-              onClick={()=>setAmount(String(remaining))}>الرصيد الكامل</button>
-          </div>
-          <div className="muted" style={{fontSize:11.5,marginTop:4}}>
-            المتبقي بعد الدفع: <span className="mono">EGP {remainingAfter.toLocaleString()}</span> · الحالة الجديدة: {nextStatus}
-          </div>
-        </Field>
-
-        {/* Method */}
-        <Field label="طريقة الدفع">
-          <select className="input" value={method} onChange={e=>setMethod(e.target.value)}>
-            <option>نقدي</option>
-            <option>فيزا</option>
-            <option>إنستاباي</option>
-            <option>فودافون كاش</option>
-            <option>تحويل بنكي</option>
-            <option>أخرى</option>
-          </select>
-        </Field>
-
-        {/* Receipt */}
-        <Field label="إيصال الدفع (JPG/PNG/PDF · بحد أقصى 8MB)">
-          <input ref={fileRef} type="file" style={{display:"none"}}
-            accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
-            onChange={onPickFile}/>
-          {!file ? (
-            <button className="btn btn-secondary" onClick={()=>fileRef.current && fileRef.current.click()}>
-              <I.Upload size={13}/> رفع إيصال
-            </button>
-          ) : (
-            <div style={{display:"flex",alignItems:"center",gap:10,padding:10,border:"1px solid var(--ink-200)",borderRadius:10}}>
-              {previewUrl ? (
-                <img src={previewUrl} alt="preview" style={{width:56,height:56,objectFit:"cover",borderRadius:8,border:"1px solid var(--ink-200)"}}/>
-              ) : (
-                <div style={{width:56,height:56,display:"flex",alignItems:"center",justifyContent:"center",background:"var(--ink-50)",borderRadius:8,border:"1px solid var(--ink-200)"}}>
-                  <I.FileText size={22}/>
-                </div>
-              )}
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12.5,fontWeight:500,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{file.name}</div>
-                <div className="muted mono" style={{fontSize:11}}>{Math.round((file.size||0)/1024)} KB · {file.type || "unknown"}</div>
-              </div>
-              <button className="btn btn-ghost btn-icon" title="حذف" onClick={()=>setFile(null)} disabled={uploading||submitting}><I.X size={13}/></button>
-            </div>
-          )}
-        </Field>
-
-        {/* Optional fields */}
-        <div className="rgrid c-lg" style={{"--gtc":"1fr 1fr",gap:10}}>
-          <Field label="رقم المعاملة (اختياري)">
-            <input className="input" value={txId} onChange={e=>setTxId(e.target.value)}/>
-          </Field>
-          <Field label="رقم المرجع (اختياري)">
-            <input className="input" value={reference} onChange={e=>setReference(e.target.value)}/>
-          </Field>
-        </div>
-        <Field label="ملاحظات (اختياري)">
-          <textarea className="input" rows={2} value={notes} onChange={e=>setNotes(e.target.value)} style={{padding:8,resize:"vertical"}}/>
-        </Field>
-
-        {error && (
-          <div style={{background:"#FEE2E2",border:"1px solid #FCA5A5",color:"#991B1B",padding:"8px 12px",borderRadius:8,fontSize:12.5}}>
-            {error}
-          </div>
-        )}
-      </div>
-
-      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
-        <button className="btn btn-secondary" onClick={onClose} disabled={submitting}>إلغاء</button>
-        <button className="btn btn-blue" onClick={()=>{ const v = validate(); if (v) { setError(v); return; } setError(""); setConfirmOpen(true); }}
-          disabled={submitting}>
-          <I.Check size={13}/> متابعة
-        </button>
-      </div>
-    </Modal>
-
-    {confirmOpen && (
-      <Modal open onClose={submitting?()=>{}:()=>setConfirmOpen(false)} width={480} title="تأكيد الدفع">
-        <div style={{display:"grid",gap:10,fontSize:13}}>
-          <Row k="رقم الفاتورة"  v={<span className="mono">{invoice.id}</span>}/>
-          <Row k="المريض"         v={patient.name || invoice.patient}/>
-          <Row k="مبلغ الدفع"     v={<span className="mono" style={{fontWeight:600}}>EGP {amt.toLocaleString()}</span>}/>
-          <Row k="المتبقي بعد الدفع" v={<span className="mono">EGP {remainingAfter.toLocaleString()}</span>}/>
-          <Row k="طريقة الدفع"    v={method}/>
-          <Row k="إيصال مرفق"     v={file ? file.name : "لا يوجد"}/>
-        </div>
-        <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:16}}>
-          <button className="btn btn-secondary" onClick={()=>setConfirmOpen(false)} disabled={submitting}>إلغاء</button>
-          <button className="btn btn-blue" onClick={submit} disabled={submitting}>
-            {submitting ? <span className="spin" style={{width:12,height:12,border:"2px solid #fff",borderTopColor:"transparent",borderRadius:"50%"}}/> : <I.Check size={13}/>}
-            {submitting ? "جارٍ الحفظ…" : "تأكيد الدفع"}
-          </button>
-        </div>
-      </Modal>
-    )}
-    </>
-  );
-}
-
-// ── InvoicePaymentHistoryModal ───────────────────────────────
-// Reads payments + receipts from PaymentReceipts.history / .list.
-// Admin can delete a receipt (soft-delete via delete_payment_receipt).
-function InvoicePaymentHistoryModal({ invoice, onClose }) {
-  const [payments, setPayments] = React.useState([]);
-  const [receipts, setReceipts] = React.useState([]);
-  const [loading, setLoading]   = React.useState(true);
-  const meRole = (window.ME && (window.ME.role || "")) || "";
-  const isAdmin = meRole === "مدير" || meRole === "admin";
-  const invoiceId = invoice.invoice_id || invoice.id;
-
-  const reload = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      const [ps, rs] = await Promise.all([
-        window.PaymentReceipts.history(invoiceId),
-        window.PaymentReceipts.list(invoiceId),
-      ]);
-      setPayments(Array.isArray(ps) ? ps : []);
-      setReceipts(Array.isArray(rs) ? rs : []);
-    } catch (e) { console.warn("history load failed", e); }
-    finally { setLoading(false); }
-  }, [invoiceId]);
-
-  React.useEffect(() => { reload(); }, [reload]);
-  React.useEffect(() => {
-    const h = () => reload();
-    window.addEventListener("kinetic:payment-receipt-updated", h);
-    window.addEventListener("kinetic:data-updated", h);
-    return () => {
-      window.removeEventListener("kinetic:payment-receipt-updated", h);
-      window.removeEventListener("kinetic:data-updated", h);
-    };
-  }, [reload]);
-
-  const receiptFor = (paymentId) => receipts.find(r => r.payment_id === paymentId && !r.deleted_at);
-  const invAllocOf = (p) => {
-    const allocs = Array.isArray(p.allocations) ? p.allocations
-                 : (typeof p.allocations === "string" ? JSON.parse(p.allocations || "[]") : []);
-    return allocs.find(a => a.type === "invoice" && String(a.id) === String(invoiceId));
-  };
-
-  async function removeReceipt(rct) {
-    if (!isAdmin) return;
-    if (!window.confirm("حذف الإيصال؟ العملية المالية لن تُحذف.")) return;
-    const res = await window.PaymentReceipts.remove(rct.receipt_id);
-    if (res.ok) { if (window.showToast) window.showToast("تم حذف الإيصال", "success"); reload(); }
-    else if (window.showToast) window.showToast(res.error || "تعذّر الحذف", "error");
-  }
-
-  return (
-    <Modal open onClose={onClose} width={720} title={`سجل الدفعات — ${invoice.id}`}>
-      {loading && <div className="muted" style={{padding:20,textAlign:"center"}}>جارٍ التحميل…</div>}
-      {!loading && payments.length === 0 && (
-        <EmptyState icon={<I.CreditCard size={22}/>} title="لا دفعات بعد" body="ستظهر الدفعات هنا بعد استلامها."/>
-      )}
-      {!loading && payments.length > 0 && (
-        <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          {payments.map(p => {
-            const alloc = invAllocOf(p);
-            const amt   = Number(alloc && alloc.amount || 0);
-            const rct   = receiptFor(p.payment_id);
-            return (
-              <div key={p.payment_id} style={{border:"1px solid var(--ink-200)",borderRadius:10,padding:12}}>
-                <div style={{display:"flex",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
-                  <div>
-                    <div style={{fontWeight:600,fontSize:13}} className="mono">{p.payment_id}</div>
-                    <div className="muted" style={{fontSize:11.5,marginTop:2}}>
-                      {String(p.created_at || "").slice(0,16).replace("T"," ")} · {p.cashier_name || "—"}
-                    </div>
-                  </div>
-                  <div style={{textAlign:"left"}}>
-                    <div className="mono" style={{fontSize:14,fontWeight:600}}>EGP {amt.toLocaleString()}</div>
-                    <div className="muted" style={{fontSize:11.5,marginTop:2}}>{p.method}</div>
-                  </div>
-                </div>
-                {(p.transaction_id || p.reference || p.notes) && (
-                  <div className="muted" style={{fontSize:11.5,marginTop:6,display:"grid",gap:2}}>
-                    {p.transaction_id && <div>معاملة: <span className="mono">{p.transaction_id}</span></div>}
-                    {p.reference && <div>مرجع: <span className="mono">{p.reference}</span></div>}
-                    {p.notes && <div>ملاحظات: {p.notes}</div>}
-                  </div>
-                )}
-                {rct && (
-                  <div style={{marginTop:8,display:"flex",alignItems:"center",gap:8,padding:8,background:"var(--ink-50)",borderRadius:8}}>
-                    <I.FileText size={14}/>
-                    <div style={{flex:1,minWidth:0,fontSize:12,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                      {rct.file_name || "إيصال"}
-                    </div>
-                    {rct.file_url && (
-                      <>
-                        <a className="btn btn-ghost btn-icon" href={rct.file_url} target="_blank" rel="noreferrer" title="عرض"><I.Eye size={12}/></a>
-                        <a className="btn btn-ghost btn-icon" href={rct.file_url} download={rct.file_name||"receipt"} title="تحميل"><I.Download size={12}/></a>
-                      </>
-                    )}
-                    {isAdmin && (
-                      <button className="btn btn-ghost btn-icon" title="حذف" onClick={()=>removeReceipt(rct)}><I.X size={12}/></button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
-        <button className="btn btn-secondary" onClick={onClose}>إغلاق</button>
-      </div>
-    </Modal>
   );
 }
 
@@ -2660,16 +2693,16 @@ function CalendarView({ dateOffset, setDateOffset }) {
       <RescheduleModal
         appt={rescheduleModal}
         onClose={()=>setRescheduleModal(null)}
-        onSave={(newTime, newTherapist)=>{
+        onSave={(newTime, newTherapist, newDateIso)=>{
           const therapistRow = (DATA.therapists || []).find(x=>x.name===newTherapist);
           const patch = {
             time: newTime, th: newTherapist,
             therapist_id: therapistRow ? (therapistRow.staff_id || therapistRow.id) : rescheduleModal.therapist_id,
-            date: apptDateIso(rescheduleModal),
+            date: newDateIso || apptDateIso(rescheduleModal),
           };
           persistMove(rescheduleModal, patch);
           setRescheduleModal(null);
-          if(window.showToast) window.showToast(`تم إعادة جدولة موعد ${rescheduleModal.patient} إلى ${newTime}`, "success");
+          if(window.showToast) window.showToast(`تم إعادة جدولة موعد ${rescheduleModal.patient} إلى ${newDateIso} ${newTime}`, "success");
         }}
         therapists={therapists}
       />
@@ -2723,15 +2756,103 @@ function Row({ k, v }) {
 }
 
 function RescheduleModal({ appt, onClose, onSave, therapists }) {
+  // Live-tick every minute so past-time gating remains accurate even
+  // if the modal sits open across the top of the hour or midnight.
+  const [nowTick, setNowTick] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  // Re-render whenever another tab/module writes a booking so slot
+  // availability stays fresh without a page reload.
+  window.useDataVersion && window.useDataVersion();
+
+  const AR_WEEKDAYS = ["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
+  const AR_MONTHS   = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
   const timeSlots = [
     "08:00","08:30","09:00","09:30","10:00","10:30","11:00","11:30",
     "12:00","12:30","13:00","13:30","14:00","14:30","15:00","15:30",
     "16:00","16:30","17:00","17:30","18:00"
   ];
-  const [newTime, setNewTime] = React.useState(appt.time);
+
+  // Real "today" derived from the runtime clock — never hardcoded.
+  const now       = new Date(nowTick);
+  const todayIsoR = isoDate(now);
+  const nowHM     = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+
+  // Build 7 rolling calendar days starting today. Each card carries
+  // its own ISO so downstream logic never re-parses Arabic labels.
+  const days = React.useMemo(() => {
+    const out = [];
+    const base = new Date(todayIsoR + "T00:00:00");
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(base); d.setDate(base.getDate() + i);
+      const iso = isoDate(d);
+      const wd  = AR_WEEKDAYS[d.getDay()];
+      const mo  = AR_MONTHS[d.getMonth()];
+      const short = i === 0 ? `اليوم، ${d.getDate()} ${mo}`
+                  : i === 1 ? `غدًا، ${d.getDate()} ${mo}`
+                  : `${wd}، ${d.getDate()} ${mo}`;
+      out.push({ iso, weekday: wd, day: d.getDate(), month: mo, label: short });
+    }
+    return out;
+  }, [todayIsoR]);
+
+  // Bookings from the live source (DB-backed via KineticData → DATA).
+  const allAppts = (window.scopeAppts ? window.scopeAppts(DATA.appts || []) : (DATA.appts || []));
+
+  // Available count per day = working slots − bookings for that day
+  // that aren't cancelled and aren't the appointment being rescheduled.
+  function availableCount(iso) {
+    const taken = allAppts.filter(a =>
+      apptDateIso(a) === iso &&
+      a.status !== "ملغي" && a.status !== "متاح" &&
+      (a.booking_id || a.id) !== (appt.booking_id || appt.id)
+    ).length;
+    let total = timeSlots.length;
+    if (iso === todayIsoR) {
+      // Slots already in the past today can't be booked either.
+      total = timeSlots.filter(t => t > nowHM).length;
+    }
+    return Math.max(0, total - taken);
+  }
+
+  // Default selection: keep the appt's current date if it's still in
+  // the visible window and not in the past; otherwise fall back to today.
+  const initialIso = React.useMemo(() => {
+    const cur = apptDateIso(appt);
+    if (cur >= todayIsoR && days.some(d => d.iso === cur)) return cur;
+    return todayIsoR;
+  }, [appt, todayIsoR, days]);
+
+  const [newTime, setNewTime]           = React.useState(appt.time);
   const [newTherapist, setNewTherapist] = React.useState(appt.th);
-  const [newDate, setNewDate] = React.useState("اليوم، 24 مايو");
-  const dates = ["اليوم، 24 مايو","غدًا، 25 مايو","الثلاثاء، 26 مايو","الأربعاء، 27 مايو","الخميس، 28 مايو","الجمعة، 29 مايو"];
+  const [newDateIso, setNewDateIso]     = React.useState(initialIso);
+
+  // Times taken by other appointments on the chosen day for the chosen therapist.
+  const takenTimes = React.useMemo(() => {
+    return new Set(
+      allAppts
+        .filter(a =>
+          apptDateIso(a) === newDateIso &&
+          a.status !== "ملغي" && a.status !== "متاح" &&
+          (a.th === newTherapist) &&
+          (a.booking_id || a.id) !== (appt.booking_id || appt.id)
+        )
+        .map(a => a.time)
+    );
+  }, [allAppts, newDateIso, newTherapist, appt]);
+
+  const selectedDay = days.find(d => d.iso === newDateIso) || days[0];
+  const selectedLabel = selectedDay
+    ? `${selectedDay.weekday}، ${selectedDay.day} ${selectedDay.month}`
+    : newDateIso;
+
+  const canSave =
+    !!newDateIso && !!newTime && !!newTherapist &&
+    newDateIso >= todayIsoR &&
+    !(newDateIso === todayIsoR && newTime <= nowHM) &&
+    !takenTimes.has(newTime);
 
   const sectionLabel = (text) => (
     <div style={{
@@ -2782,29 +2903,40 @@ function RescheduleModal({ appt, onClose, onSave, therapists }) {
           <span style={{fontSize:13,color:"var(--ink-700)",whiteSpace:"nowrap"}}>{appt.th}</span>
         </div>
 
-        {/* ── Date picker ── */}
+        {/* ── Date picker (rolling 7 days from real system time) ── */}
         <div style={{marginBottom:22}}>
           {sectionLabel("اليوم الجديد")}
-          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            {dates.map(d => {
-              const active = newDate === d;
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(120px, 1fr))",gap:8}}>
+            {days.map(d => {
+              const active = newDateIso === d.iso;
+              const avail  = availableCount(d.iso);
+              const full   = avail === 0;
               return (
                 <button
-                  key={d}
-                  onClick={()=>setNewDate(d)}
+                  key={d.iso}
+                  onClick={()=> !full && setNewDateIso(d.iso)}
+                  disabled={full}
+                  title={full ? "لا تتوفر مواعيد" : `${avail} موعد متاح`}
                   style={{
-                    display:"inline-flex",alignItems:"center",justifyContent:"center",
-                    whiteSpace:"nowrap",
-                    padding:"8px 16px",
-                    borderRadius:10,border:"none",cursor:"pointer",
-                    fontSize:13,fontWeight: active?600:500,
-                    background: active?"var(--blue-500)":"var(--ink-100)",
-                    color: active?"#fff":"var(--ink-700)",
-                    boxShadow: active?"0 2px 8px rgba(59,130,246,.3)":"none",
+                    display:"flex",flexDirection:"column",alignItems:"center",gap:2,
+                    padding:"10px 12px",borderRadius:12,
+                    border: active ? "none" : "1px solid var(--ink-200)",
+                    cursor: full ? "not-allowed" : "pointer",
+                    background: active ? "var(--blue-500)" : full ? "var(--ink-50)" : "#fff",
+                    color: active ? "#fff" : full ? "var(--ink-300)" : "var(--ink-900)",
+                    boxShadow: active ? "0 2px 8px rgba(59,130,246,.3)" : "none",
                     transition:"all .12s",
-                    minWidth:0,
+                    opacity: full ? .55 : 1,
                   }}
-                >{d}</button>
+                >
+                  <span style={{fontSize:11.5,fontWeight:500,opacity:.85}}>{d.weekday}</span>
+                  <span style={{fontSize:15,fontWeight:600,fontFamily:"var(--mono, monospace)"}}>
+                    {d.day} {d.month}
+                  </span>
+                  <span style={{fontSize:11,opacity:.85}}>
+                    {full ? "محجوز بالكامل" : `${avail} متاح`}
+                  </span>
+                </button>
               );
             })}
           </div>
@@ -2820,18 +2952,24 @@ function RescheduleModal({ appt, onClose, onSave, therapists }) {
           }}>
             {timeSlots.map(t => {
               const active = newTime === t;
+              const isPast = newDateIso === todayIsoR && t <= nowHM;
+              const isTaken = takenTimes.has(t);
+              const disabled = isPast || isTaken;
               return (
                 <button
                   key={t}
-                  onClick={()=>setNewTime(t)}
+                  disabled={disabled}
+                  onClick={()=> !disabled && setNewTime(t)}
+                  title={isPast ? "وقت سابق" : isTaken ? "محجوز" : ""}
                   style={{
                     display:"flex",alignItems:"center",justifyContent:"center",
-                    padding:"8px 4px",borderRadius:9,border:"none",cursor:"pointer",
+                    padding:"8px 4px",borderRadius:9,cursor:disabled?"not-allowed":"pointer",
                     fontSize:13,fontWeight: active?600:400,fontFamily:"var(--mono, monospace)",
-                    background: active?"var(--blue-500)":"var(--ink-50)",
-                    color: active?"#fff":"var(--ink-700)",
+                    background: active?"var(--blue-500)":disabled?"var(--ink-100)":"var(--ink-50)",
+                    color: active?"#fff":disabled?"var(--ink-300)":"var(--ink-700)",
                     boxShadow: active?"0 2px 8px rgba(59,130,246,.3)":"none",
                     border: active?"none":"1px solid var(--ink-200)",
+                    textDecoration: isTaken ? "line-through" : "none",
                     transition:"all .12s",
                     whiteSpace:"nowrap",
                   }}
@@ -2885,14 +3023,15 @@ function RescheduleModal({ appt, onClose, onSave, therapists }) {
         }}>
           <div style={{fontSize:12.5,color:"var(--ink-500)",whiteSpace:"nowrap"}}>
             <I.Calendar size={12} style={{marginLeft:4,verticalAlign:"middle"}}/>
-            {newDate} · {newTime}
+            {selectedLabel} · {newTime || "—"}
           </div>
           <div style={{display:"flex",gap:8,flexShrink:0}}>
             <button className="btn btn-ghost" onClick={onClose} style={{whiteSpace:"nowrap"}}>إلغاء</button>
             <button
               className="btn btn-blue"
-              onClick={()=>onSave(newTime, newTherapist)}
-              style={{whiteSpace:"nowrap"}}
+              disabled={!canSave}
+              onClick={()=> canSave && onSave(newTime, newTherapist, newDateIso)}
+              style={{whiteSpace:"nowrap",opacity:canSave?1:.55,cursor:canSave?"pointer":"not-allowed"}}
             >
               <I.Check size={13}/> تأكيد إعادة الجدولة
             </button>

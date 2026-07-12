@@ -19,7 +19,7 @@ const ROLE_PROFILES = {
 const ROLE_ROUTES = {
   "مدير":          ["dashboard","patients","appointments","treatments","sessions","payments","packages","campaigns","reports","settings"],
   "موظف استقبال":  ["dashboard","appointments","patients","payments","reports"],
-  "طبيب":          ["dashboard","patients","appointments","treatments","sessions","reports"],
+  "طبيب":          ["dashboard","patients","appointments","treatments","sessions","reports","settings"],
   "الأخصائي":       ["dashboard","appointments","sessions","patients"],
 };
 

@@ -879,3 +879,154 @@ begin
 end;
 $$;
 grant execute on function public.delete_treatment_method(text) to authenticated;
+
+
+-- ═════════════════════════════════════════════════════════════
+-- 4. TEMPLATE CATEGORIES ("فئات القوالب")
+-- Managed from Settings → قوالب خطط العلاج. Templates.category
+-- remains free-text on the row so historical templates keep their
+-- category even after a category is archived or renamed; the
+-- categories table is the *authoritative source* for the picker.
+-- ═════════════════════════════════════════════════════════════
+create table if not exists template_categories (
+  category_id     text primary key,
+  name            text not null,
+  description     text,
+  status          text not null default 'active'
+                    check (status in ('active','archived')),
+  sort_order      int,
+  created_by      uuid,
+  created_by_name text,
+  created_at      timestamptz default now(),
+  updated_at      timestamptz default now()
+);
+create unique index if not exists tpl_cat_name_uniq
+  on template_categories(lower(trim(name)));
+create index if not exists tpl_cat_status_idx  on template_categories(status);
+create index if not exists tpl_cat_sort_idx    on template_categories(sort_order nulls last, name);
+
+alter table template_categories enable row level security;
+
+drop policy if exists "clinical read tpl categories" on template_categories;
+create policy "clinical read tpl categories" on template_categories for select using (
+  public.app_role() in ('admin','doctor','therapist')
+);
+-- Writes go through the RPCs below (security definer).
+
+-- ── RPC: list categories ─────────────────────────────────────
+create or replace function public.list_template_categories(
+  p_include_archived boolean default false
+) returns jsonb
+language plpgsql security definer set search_path = public stable as $$
+declare
+  v_rows jsonb;
+begin
+  if public.app_role() not in ('admin','doctor','therapist') then
+    raise exception 'غير مصرح';
+  end if;
+  select coalesce(jsonb_agg(to_jsonb(c.*) order by
+    coalesce(c.sort_order, 999999), c.name),'[]'::jsonb)
+    into v_rows
+    from template_categories c
+   where p_include_archived or c.status = 'active';
+  return jsonb_build_object('rows', v_rows);
+end;
+$$;
+grant execute on function public.list_template_categories(boolean) to authenticated;
+
+-- ── RPC: upsert (create or rename/reorder) category ──────────
+create or replace function public.upsert_template_category(
+  p_category_id text,
+  p_payload     jsonb
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_role text := public.app_role();
+  v_uid  uuid := auth.uid();
+  v_name text := btrim(coalesce(p_payload->>'name',''));
+  v_id   text := p_category_id;
+  v_old  template_categories%rowtype;
+  v_dup  int;
+  v_action text;
+begin
+  if v_role not in ('admin','doctor') then
+    raise exception 'غير مصرح — لا تملك صلاحية إدارة الفئات';
+  end if;
+  if v_name = '' then raise exception 'اسم الفئة مطلوب'; end if;
+
+  if v_id is null or v_id = '' then
+    v_id := 'TPC-' || to_char(now(),'YYYYMMDD-HH24MISS') || '-'
+         || upper(substr(md5(random()::text),1,4));
+  end if;
+
+  select * into v_old from template_categories where category_id = v_id for update;
+  v_action := case when found then 'tpl_cat_update' else 'tpl_cat_create' end;
+
+  select count(*) into v_dup from template_categories
+    where lower(trim(name)) = lower(v_name) and category_id <> v_id;
+  if v_dup > 0 then raise exception 'اسم الفئة موجود مسبقًا'; end if;
+
+  if found then
+    -- Renaming? Propagate to any templates using the old name so their
+    -- category field stays consistent with the authoritative label.
+    if v_old.name is distinct from v_name then
+      update treatment_templates set category = v_name
+        where category = v_old.name;
+    end if;
+    update template_categories set
+      name        = v_name,
+      description = nullif(btrim(coalesce(p_payload->>'description','')),''),
+      sort_order  = nullif(p_payload->>'sort_order','')::int,
+      updated_at  = now()
+      where category_id = v_id;
+  else
+    insert into template_categories (
+      category_id, name, description, sort_order,
+      status, created_by, created_by_name
+    ) values (
+      v_id, v_name,
+      nullif(btrim(coalesce(p_payload->>'description','')),''),
+      nullif(p_payload->>'sort_order','')::int,
+      'active', v_uid,
+      (select name from staff where user_id = v_uid limit 1)
+    );
+  end if;
+
+  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
+  values (v_uid, v_role, v_action, 'template_categories', v_id,
+    jsonb_build_object('old', to_jsonb(v_old), 'new', p_payload));
+
+  return jsonb_build_object('category_id', v_id, 'name', v_name);
+end;
+$$;
+grant execute on function public.upsert_template_category(text, jsonb) to authenticated;
+
+-- ── RPC: archive / restore category ──────────────────────────
+create or replace function public.set_template_category_status(
+  p_category_id text,
+  p_status      text
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_role text := public.app_role();
+  v_uid  uuid := auth.uid();
+begin
+  if v_role not in ('admin','doctor') then
+    raise exception 'غير مصرح';
+  end if;
+  if p_status not in ('active','archived') then
+    raise exception 'حالة غير صحيحة';
+  end if;
+  update template_categories set status = p_status, updated_at = now()
+    where category_id = p_category_id;
+  if not found then raise exception 'الفئة غير موجودة'; end if;
+
+  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
+  values (v_uid, v_role,
+    case when p_status='archived' then 'tpl_cat_archive' else 'tpl_cat_restore' end,
+    'template_categories', p_category_id, jsonb_build_object('status', p_status));
+
+  return jsonb_build_object('category_id', p_category_id, 'status', p_status);
+end;
+$$;
+grant execute on function public.set_template_category_status(text, text) to authenticated;

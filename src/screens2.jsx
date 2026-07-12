@@ -105,6 +105,7 @@ function Treatments({ go }) {
       </div>
       {templatesOpen && (
         <TemplatesLibraryModal
+          pickerOnly
           onClose={()=>setTemplatesOpen(false)}
           onUse={(t)=>{
             setTemplate(t);
@@ -2694,7 +2695,7 @@ function OperationalReport() {
   const utilization = appts.length ? Math.round(booked.length / appts.length * 100) : 0;
 
   // By weekday (bookings carry a date in production).
-  const wd = ["الأحد","الأثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
+  const wd = ["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
   const byDay = wd.map(l => ({ label:l, v:0, color:"#7BBDE8" }));
   booked.forEach(a => { if (a.date) { const d = new Date(a.date); if (!isNaN(d)) byDay[d.getDay()].v += 1; } });
 
@@ -2757,11 +2758,14 @@ function OperationalReport() {
 
 // ───────────────── Settings ─────────────────
 function SettingsPage({ go }) {
-  const [tab, setTab] = React.useState("clinic");
-  // Guard: only admins may reach Settings. Everyone else sees a friendly
-  // 403 instead of clinic branding, user management, and integration keys.
   const role = (window.ME && window.ME.role) || "";
-  if (role && role !== "مدير") {
+  const isAdmin = !role || role === "مدير";
+  // Doctors and therapists may reach Settings *only* to manage/view the
+  // treatment-plan templates library — all other tabs stay admin-only.
+  const canReadTemplates = isAdmin || role === "طبيب" || role === "الأخصائي";
+  const [tab, setTab] = React.useState(isAdmin ? "clinic" : "templates");
+
+  if (!isAdmin && !canReadTemplates) {
     return (
       <Page>
         <div className="crumb"><span>الرئيسية</span><I.Chevron size={11}/><span>الإعدادات</span></div>
@@ -2774,6 +2778,25 @@ function SettingsPage({ go }) {
       </Page>
     );
   }
+
+  // Only the "templates" tab is available to non-admin clinical roles.
+  const items = isAdmin
+    ? [
+        { id:"clinic",    l:"بيانات العيادة",       ic:<I.MapPin size={14}/> },
+        { id:"branding",  l:"الهوية البصرية",       ic:<I.Image size={14}/> },
+        { id:"sections",  l:"أقسام مخصصة",          ic:<I.Layers size={14}/> },
+        { id:"depts",     l:"الأقسام والأطباء",      ic:<I.Stethoscope size={14}/> },
+        { id:"users",     l:"المستخدمون والأدوار",    ic:<I.Users size={14}/> },
+        { id:"templates", l:"قوالب خطط العلاج",      ic:<I.FileText size={14}/> },
+        { id:"billing",   l:"الفوترة",              ic:<I.CreditCard size={14}/> },
+        { id:"notifs",    l:"الإشعارات",             ic:<I.Bell size={14}/> },
+        { id:"integ",     l:"التكاملات",             ic:<I.Layers size={14}/> },
+        { id:"sec",       l:"الأمان",                ic:<I.Lock size={14}/> },
+      ]
+    : [
+        { id:"templates", l:"قوالب خطط العلاج", ic:<I.FileText size={14}/> },
+      ];
+
   return (
     <Page>
       <div className="crumb"><span>الرئيسية</span><I.Chevron size={11}/><span>الإعدادات</span></div>
@@ -2781,17 +2804,7 @@ function SettingsPage({ go }) {
 
       <div className="rgrid c-lg" style={{"--gtc":"220px 1fr"}}>
         <div className="card side-tabs" style={{padding:8,height:"fit-content"}}>
-          {[
-            { id:"clinic",   l:"بيانات العيادة",   ic:<I.MapPin size={14}/>},
-            { id:"branding", l:"الهوية البصرية",         ic:<I.Image size={14}/>},
-            { id:"sections", l:"أقسام مخصصة",       ic:<I.Layers size={14}/>},
-            { id:"depts",    l:"الأقسام والأطباء",   ic:<I.Stethoscope size={14}/>},
-            { id:"users",    l:"المستخدمون والأدوار",    ic:<I.Users size={14}/>},
-            { id:"billing",  l:"الفوترة",          ic:<I.CreditCard size={14}/>},
-            { id:"notifs",   l:"الإشعارات",    ic:<I.Bell size={14}/>},
-            { id:"integ",    l:"التكاملات",     ic:<I.Layers size={14}/>},
-            { id:"sec",      l:"الأمان",         ic:<I.Lock size={14}/>},
-          ].map(s=>(
+          {items.map(s=>(
             <div key={s.id} className={"nav-item" + (tab===s.id?" active":"")} style={{margin:0}} onClick={()=>setTab(s.id)}>
               {s.ic}{s.l}
             </div>
@@ -2804,7 +2817,8 @@ function SettingsPage({ go }) {
           {tab==="users" && <UsersPanel/>}
           {tab==="branding" && <BrandingPanel/>}
           {tab==="sections" && <CustomSectionsPanel/>}
-          {tab!=="clinic" && tab!=="users" && tab!=="branding" && tab!=="sections" && tab!=="depts" && (
+          {tab==="templates" && <TemplatesSettingsPanel/>}
+          {tab!=="clinic" && tab!=="users" && tab!=="branding" && tab!=="sections" && tab!=="depts" && tab!=="templates" && (
             <EmptyState icon={<I.Settings size={22}/>} title="قريبًا" body={`The "${tab}" section is part من the next release. Reach out to support if you need something configured.`}/>
           )}
         </div>
@@ -3640,6 +3654,10 @@ function App() {
     setRoute(r);
     window.scrollTo({top:0, behavior:"smooth"});
   }
+  // Expose the router to descendants that can't easily receive `go` via
+  // props (e.g. modals opened deep inside pages that want to redirect
+  // to Settings on "إدارة القوالب").
+  React.useEffect(() => { window.navigate = go; }, []);
 
   function handleLogin(u) {
     window.ME = u;
@@ -4595,12 +4613,64 @@ function PatientProfile() {
 }
 
 // ──────── المريض booking flow (focused, friendly) ────────
+// Arabic calendar constants shared by the two booking flows below.
+// PRD-mandated names (with hamza on الإثنين) — do not swap for locale
+// output, which uses "الاثنين" in ar-EG.
+const __BK_AR_WD = ["الأحد","الإثنين","الثلاثاء","الأربعاء","الخميس","الجمعة","السبت"];
+const __BK_AR_MO = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
+const __BK_SLOTS = [
+  "08:30","09:00","09:30","10:00","10:30","11:00","11:30",
+  "12:00","13:00","13:30","14:00","14:30","15:00","15:30","16:00","16:30","17:00"
+];
+function __bkIso(d){ const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+function __bkFormat(iso, offset) {
+  const d = new Date(iso + "T00:00:00");
+  const wd = __BK_AR_WD[d.getDay()], mo = __BK_AR_MO[d.getMonth()], day = d.getDate();
+  const label = offset === 0 ? `اليوم، ${day} ${mo}`
+              : offset === 1 ? `غدًا، ${day} ${mo}`
+              : `${wd}، ${day} ${mo}`;
+  return { iso, weekday: wd, day, month: mo, label };
+}
+// Build `count` rolling days starting today; each carries the ISO
+// date and a per-day availability count derived from live bookings.
+function __bkDays(count, therapistName, excludeId) {
+  const now = new Date();
+  const todayIso = __bkIso(now);
+  const nowHM = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+  const all = (window.scopeAppts ? window.scopeAppts(DATA.appts || []) : (DATA.appts || []));
+  const out = [];
+  const base = new Date(todayIso + "T00:00:00");
+  for (let i = 0; i < count; i++) {
+    const d = new Date(base); d.setDate(base.getDate() + i);
+    const iso = __bkIso(d);
+    const info = __bkFormat(iso, i);
+    const takenTimes = new Set(
+      all.filter(a =>
+        (a.date && String(a.date).slice(0,10) === iso) &&
+        a.status !== "ملغي" && a.status !== "متاح" &&
+        (!therapistName || a.th === therapistName) &&
+        (excludeId == null || (a.booking_id || a.id) !== excludeId)
+      ).map(a => a.time)
+    );
+    const slotPool = iso === todayIso ? __BK_SLOTS.filter(t => t > nowHM) : __BK_SLOTS;
+    const avail = Math.max(0, slotPool.filter(t => !takenTimes.has(t)).length);
+    out.push({ ...info, slots: avail, takenTimes, todayIso, nowHM });
+  }
+  return out;
+}
+
 function PatientBookingFlow({ onClose, onDone }) {
+  // Live tick so past-time gating stays honest across the top of the
+  // hour, and useDataVersion so external booking mutations re-render.
+  const [nowTick, setNowTick] = React.useState(() => Date.now());
+  React.useEffect(() => { const id = setInterval(() => setNowTick(Date.now()), 60_000); return () => clearInterval(id); }, []);
+  window.useDataVersion && window.useDataVersion();
+
   const [step, setStep] = React.useState(1);
   const [picks, setPicks] = React.useState({
     reason: null,
     therapist: null,
-    date: new Date().toISOString().slice(0, 10),
+    date: __bkIso(new Date()),
     time: "",
   });
   const [confirming, setConfirming] = React.useState(false);
@@ -4611,6 +4681,16 @@ function PatientBookingFlow({ onClose, onDone }) {
     if (step === 1 && !picks.reason) { if (window.showToast) window.showToast("اختر سبب الزيارة", "error"); return; }
     if (step === 2 && !picks.therapist) { if (window.showToast) window.showToast("اختر المعالج", "error"); return; }
     if (step === 3 && (!picks.date || !picks.time)) { if (window.showToast) window.showToast("اختر التاريخ والوقت", "error"); return; }
+    // Reject past dates/times before persisting so the DB never sees them.
+    if (step === 3) {
+      const now = new Date(nowTick);
+      const todayIso = __bkIso(now);
+      const nowHM = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+      if (picks.date < todayIso || (picks.date === todayIso && picks.time <= nowHM)) {
+        if (window.showToast) window.showToast("لا يمكن الحجز في وقت سابق", "error");
+        return;
+      }
+    }
     if (step < 4) { setStep(step+1); return; }
     setConfirming(true);
     const me = getPatientMe();
@@ -4623,7 +4703,8 @@ function PatientBookingFlow({ onClose, onDone }) {
         id: bookingId,
         patient_id: me.file,
         therapist_id: (therapistRow && (therapistRow.staff_id || therapistRow.id)) || null,
-        date: new Date().toISOString().slice(0,10),
+        th: picks.therapist || null,
+        date: picks.date,
         time: picks.time,
         status: "مؤكد",
         notes: picks.reason || "",
@@ -4739,51 +4820,60 @@ function PatientBookingFlow({ onClose, onDone }) {
               <div className="serif" style={{fontSize:26,marginBottom:6}}>ما الوقت المناسب لك؟</div>
               <div className="muted" style={{fontSize:13.5,marginBottom:22}}>Showing live availability for {picks.therapist}.</div>
 
-              <div className="label">اختيار سريع</div>
-              <div className="rgrid quarter-sm" style={{"--gtc":"repeat(4,1fr)",gap:8,marginBottom:18}}>
-                {[
-                  { l:"غدًا", sub:"25 مايو", slots:3 },
-                  { l:"ثلا", sub:"26 مايو", slots:5 },
-                  { l:"أرب", sub:"27 مايو", slots:2 },
-                  { l:"خمي", sub:"28 مايو", slots:4 },
-                  { l:"جمع", sub:"29 مايو", slots:6 },
-                  { l:"سبت", sub:"30 مايو", slots:1 },
-                  { l:"إثن", sub:"1 يونيو", slots:7 },
-                  { l:"مخصص…", sub:"اختر تاريخًا", slots:0, custom:true },
-                ].map(d=>{
-                  const sel = picks.date.includes(d.sub);
-                  return (
-                    <button key={d.sub} onClick={()=>setPicks({...picks,date:`${d.l}, ${d.sub}`})} style={{
-                      padding:"10px 6px",cursor:"pointer",fontFamily:"inherit",
-                      border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
-                      background:sel?"var(--blue-500)":d.custom?"var(--ink-50)":"#fff",
-                      color:sel?"#fff":"var(--ink-900)",borderRadius:10
-                    }}>
-                      <div style={{fontWeight:600,fontSize:13}}>{d.l}</div>
-                      <div className="mono" style={{fontSize:10.5,opacity:.7}}>{d.sub}</div>
-                      {!d.custom && <div style={{fontSize:10,marginTop:3,color:sel?"#fff":"var(--green)"}}>● {d.slots} slots</div>}
-                    </button>
-                  );
-                })}
-              </div>
+              {(() => {
+                const bookingDays = __bkDays(7, picks.therapist, null);
+                const todayInfo   = bookingDays[0] || { todayIso: __bkIso(new Date()), nowHM: "00:00" };
+                const dayInfo     = bookingDays.find(d => d.iso === picks.date);
+                const takenTimes  = dayInfo ? dayInfo.takenTimes : new Set();
+                return (
+                  <>
+                    <div className="label">اختيار سريع</div>
+                    <div className="rgrid quarter-sm" style={{"--gtc":"repeat(4,1fr)",gap:8,marginBottom:18}}>
+                      {bookingDays.map(d => {
+                        const sel = picks.date === d.iso;
+                        const full = d.slots === 0;
+                        return (
+                          <button key={d.iso} disabled={full} onClick={()=> !full && setPicks({...picks,date:d.iso})} style={{
+                            padding:"10px 6px",cursor:full?"not-allowed":"pointer",fontFamily:"inherit",
+                            border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
+                            background:sel?"var(--blue-500)":full?"var(--ink-50)":"#fff",
+                            color:sel?"#fff":full?"var(--ink-400)":"var(--ink-900)",borderRadius:10,
+                            opacity: full ? .6 : 1,
+                          }}>
+                            <div style={{fontWeight:600,fontSize:13}}>{d.weekday}</div>
+                            <div className="mono" style={{fontSize:10.5,opacity:.7}}>{d.day} {d.month}</div>
+                            <div style={{fontSize:10,marginTop:3,color:sel?"#fff":full?"var(--ink-400)":"var(--green)"}}>
+                              ● {full ? "ممتلئ" : `${d.slots} متاح`}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
 
-              <div className="label">وقت</div>
-              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                {["08:30","09:00","09:30","10:00","10:30","11:00","13:00","14:00","14:30","15:00","16:00","16:30"].map(t=>{
-                  const unavail = ["09:30","14:30"].includes(t);
-                  const sel = picks.time === t && !unavail;
-                  return (
-                    <button key={t} disabled={unavail} onClick={()=>setPicks({...picks,time:t})} style={{
-                      padding:"8px 14px",fontFamily:"inherit",cursor:unavail?"not-allowed":"pointer",
-                      border:`1px solid ${sel?"var(--blue-500)":unavail?"var(--ink-200)":"var(--ink-200)"}`,
-                      background:sel?"var(--blue-500)":unavail?"var(--ink-100)":"#fff",
-                      color:sel?"#fff":unavail?"var(--ink-300)":"var(--ink-900)",
-                      textDecoration:unavail?"line-through":"none",
-                      borderRadius:9,fontSize:13,fontWeight:500
-                    }} className="mono">{t}</button>
-                  );
-                })}
-              </div>
+                    <div className="label">وقت</div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {__BK_SLOTS.map(t => {
+                        const isPast  = picks.date === todayInfo.todayIso && t <= todayInfo.nowHM;
+                        const isTaken = takenTimes.has(t);
+                        const unavail = isPast || isTaken;
+                        const sel     = picks.time === t && !unavail;
+                        return (
+                          <button key={t} disabled={unavail} onClick={()=> !unavail && setPicks({...picks,time:t})}
+                            title={isPast?"وقت سابق":isTaken?"محجوز":""}
+                            style={{
+                              padding:"8px 14px",fontFamily:"inherit",cursor:unavail?"not-allowed":"pointer",
+                              border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
+                              background:sel?"var(--blue-500)":unavail?"var(--ink-100)":"#fff",
+                              color:sel?"#fff":unavail?"var(--ink-300)":"var(--ink-900)",
+                              textDecoration:unavail?"line-through":"none",
+                              borderRadius:9,fontSize:13,fontWeight:500
+                            }} className="mono">{t}</button>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           ) : (
             <div>
@@ -4863,12 +4953,18 @@ Object.assign(window, { PatientPortal });
 // ═══════════════════════════════════════════════════════════════
 
 function PublicBookingScreen({ onBack, onDone }) {
+  // Live-tick so past-time gating stays honest; useDataVersion so
+  // bookings created elsewhere flow into the availability counts.
+  const [nowTick, setNowTick] = React.useState(() => Date.now());
+  React.useEffect(() => { const id = setInterval(() => setNowTick(Date.now()), 60_000); return () => clearInterval(id); }, []);
+  window.useDataVersion && window.useDataVersion();
+
   const [step, setStep] = React.useState(1); // 1..5
   const [picks, setPicks] = React.useState({
     reason: null,
     therapist: null,
-    date: "الثلاثاء، 26 مايو",
-    time: "10:00",
+    date: __bkIso(new Date()),
+    time: "",
     name: "",
     phone: "",
     isExisting: null, // true / false / null
@@ -4877,8 +4973,39 @@ function PublicBookingScreen({ onBack, onDone }) {
 
   function update(k,v) { setPicks(p=>({...p,[k]:v})); }
   function next() {
+    // Gate step 3 against past dates / past times so the DB never
+    // receives an invalid booking.
+    if (step === 3) {
+      if (!picks.date || !picks.time) {
+        if (window.showToast) window.showToast("اختر التاريخ والوقت", "error");
+        return;
+      }
+      const now = new Date(nowTick);
+      const todayIso = __bkIso(now);
+      const nowHM = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+      if (picks.date < todayIso || (picks.date === todayIso && picks.time <= nowHM)) {
+        if (window.showToast) window.showToast("لا يمكن الحجز في وقت سابق", "error");
+        return;
+      }
+    }
     if (step < 5) { setStep(step+1); return; }
     setConfirming(true);
+    // Persist the booking so it shows up in reception/dashboard views.
+    if (window.KineticData) {
+      const therapistRow = (DATA.therapists || []).find(t => t.name === picks.therapist);
+      const bookingId = "B-" + Date.now();
+      window.KineticData.upsert("appts", {
+        booking_id: bookingId,
+        id: bookingId,
+        patient: picks.name || null,
+        therapist_id: (therapistRow && (therapistRow.staff_id || therapistRow.id)) || null,
+        th: picks.therapist || null,
+        date: picks.date,
+        time: picks.time,
+        status: "معلّق",
+        notes: (picks.reason || "") + (picks.phone ? ` · ${picks.phone}` : ""),
+      }).catch(e => console.warn("public booking persist failed", e));
+    }
     setTimeout(()=>{ onDone(picks); }, 1400);
   }
 
@@ -4959,8 +5086,12 @@ function PublicBookingScreen({ onBack, onDone }) {
                     maxWidth:380,margin:"30px auto 0",textAlign:"left"
                   }}>
                     <div className="muted" style={{fontSize:11,letterSpacing:".06em",textTransform:"uppercase",marginBottom:6}}>زيارتك</div>
-                    <div className="serif" style={{fontSize:24,lineHeight:1.1}}>{picks.date}</div>
-                    <div className="mono" style={{fontSize:16,color:"var(--blue-700)",fontWeight:600,marginTop:4}}>{picks.time}</div>
+                    <div className="serif" style={{fontSize:24,lineHeight:1.1}}>{(() => {
+                      const d = new Date(picks.date + "T00:00:00");
+                      if (isNaN(d)) return picks.date;
+                      return `${__BK_AR_WD[d.getDay()]}، ${d.getDate()} ${__BK_AR_MO[d.getMonth()]}`;
+                    })()}</div>
+                    <div className="mono" style={{fontSize:16,color:"var(--blue-700)",fontWeight:600,marginTop:4}}>{picks.time || "—"}</div>
                     <hr className="sep" style={{margin:"12px 0"}}/>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:12.5}}>
                       <div><div className="muted" style={{fontSize:10.5}}>الأخصائي</div>{picks.therapist || "أي متاح"}</div>
@@ -5052,31 +5183,34 @@ function PublicBookingScreen({ onBack, onDone }) {
                 </div>
               )}
 
-              {/* STEP 3 — date & time */}
-              {!confirming && step===3 && (
+              {/* STEP 3 — date & time (dynamic, DB-driven) */}
+              {!confirming && step===3 && (() => {
+                const bookingDays = __bkDays(7, picks.therapist, null);
+                const todayInfo   = bookingDays[0] || { todayIso: __bkIso(new Date()), nowHM: "00:00" };
+                const dayInfo     = bookingDays.find(d => d.iso === picks.date);
+                const takenTimes  = dayInfo ? dayInfo.takenTimes : new Set();
+                return (
                 <div>
                   <div className="label" style={{marginBottom:10}}>اختر يومًا</div>
                   <div className="rgrid quarter-sm" style={{"--gtc":"repeat(7,1fr)",gap:6,marginBottom:22}}>
-                    {[
-                      { l:"غدًا", sub:"25 مايو", slots:3 },
-                      { l:"ثلا", sub:"26 مايو", slots:5 },
-                      { l:"أرب", sub:"27 مايو", slots:2 },
-                      { l:"خمي", sub:"28 مايو", slots:4 },
-                      { l:"جمع", sub:"29 مايو", slots:6 },
-                      { l:"سبت", sub:"30 مايو", slots:1 },
-                      { l:"إثن", sub:"1 يونيو", slots:7 },
-                    ].map(d=>{
-                      const sel = picks.date.includes(d.sub);
+                    {bookingDays.map(d => {
+                      const sel  = picks.date === d.iso;
+                      const full = d.slots === 0;
                       return (
-                        <button key={d.sub} onClick={()=>update("date",`${d.l}, ${d.sub}`)} style={{
-                          padding:"12px 4px",cursor:"pointer",fontFamily:"inherit",
-                          border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
-                          background:sel?"var(--blue-500)":"#fff",
-                          color:sel?"#fff":"var(--ink-900)",borderRadius:10
-                        }}>
-                          <div style={{fontWeight:600,fontSize:13}}>{d.l}</div>
-                          <div className="mono" style={{fontSize:10.5,opacity:.7}}>{d.sub}</div>
-                          <div style={{fontSize:10,marginTop:3,color:sel?"#fff":"var(--green)"}}>● {d.slots} slots</div>
+                        <button key={d.iso} disabled={full} onClick={()=> !full && update("date",d.iso)}
+                          title={full?"لا تتوفر مواعيد":`${d.slots} موعد متاح`}
+                          style={{
+                            padding:"12px 4px",cursor:full?"not-allowed":"pointer",fontFamily:"inherit",
+                            border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
+                            background:sel?"var(--blue-500)":full?"var(--ink-50)":"#fff",
+                            color:sel?"#fff":full?"var(--ink-400)":"var(--ink-900)",borderRadius:10,
+                            opacity: full?.6:1,
+                          }}>
+                          <div style={{fontWeight:600,fontSize:13}}>{d.weekday}</div>
+                          <div className="mono" style={{fontSize:10.5,opacity:.7}}>{d.day} {d.month}</div>
+                          <div style={{fontSize:10,marginTop:3,color:sel?"#fff":full?"var(--ink-400)":"var(--green)"}}>
+                            ● {full ? "ممتلئ" : `${d.slots} متاح`}
+                          </div>
                         </button>
                       );
                     })}
@@ -5084,23 +5218,28 @@ function PublicBookingScreen({ onBack, onDone }) {
 
                   <div className="label" style={{marginBottom:10}}>اختر وقتًا</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                    {["08:30","09:00","09:30","10:00","10:30","11:00","13:00","14:00","14:30","15:00","16:00","16:30","17:00"].map(t=>{
-                      const unavail = ["09:30","14:30"].includes(t);
-                      const sel = picks.time === t && !unavail;
+                    {__BK_SLOTS.map(t => {
+                      const isPast  = picks.date === todayInfo.todayIso && t <= todayInfo.nowHM;
+                      const isTaken = takenTimes.has(t);
+                      const unavail = isPast || isTaken;
+                      const sel     = picks.time === t && !unavail;
                       return (
-                        <button key={t} disabled={unavail} onClick={()=>update("time",t)} style={{
-                          padding:"10px 16px",fontFamily:"inherit",cursor:unavail?"not-allowed":"pointer",
-                          border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
-                          background:sel?"var(--blue-500)":unavail?"var(--ink-100)":"#fff",
-                          color:sel?"#fff":unavail?"var(--ink-300)":"var(--ink-900)",
-                          textDecoration:unavail?"line-through":"none",
-                          borderRadius:10,fontSize:13,fontWeight:500
-                        }} className="mono">{t}</button>
+                        <button key={t} disabled={unavail} onClick={()=> !unavail && update("time",t)}
+                          title={isPast?"وقت سابق":isTaken?"محجوز":""}
+                          style={{
+                            padding:"10px 16px",fontFamily:"inherit",cursor:unavail?"not-allowed":"pointer",
+                            border:`1px solid ${sel?"var(--blue-500)":"var(--ink-200)"}`,
+                            background:sel?"var(--blue-500)":unavail?"var(--ink-100)":"#fff",
+                            color:sel?"#fff":unavail?"var(--ink-300)":"var(--ink-900)",
+                            textDecoration:unavail?"line-through":"none",
+                            borderRadius:10,fontSize:13,fontWeight:500
+                          }} className="mono">{t}</button>
                       );
                     })}
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* STEP 4 — contact info */}
               {!confirming && step===4 && (
@@ -5207,9 +5346,9 @@ function PublicBookingScreen({ onBack, onDone }) {
           {!confirming && (
             <div style={{display:"flex",justifyContent:"center",gap:32,marginTop:24,flexWrap:"wrap"}}>
               {[
-                { ic:<I.Check size={14}/>, t:"4.9 ★ from 1,400+ مريض" },
-                { ic:<I.Lock size={14}/>,  t:"طبي-grade privacy" },
-                { ic:<I.WhatsApp size={14}/>, t:"Confirmation بواسطة واتساب" },
+                // { ic:<I.Check size={14}/>, t:"4.9 ★ from 1,400+ مريض" },
+                // { ic:<I.Lock size={14}/>,  t:"طبي-grade privacy" },
+                // { ic:<I.WhatsApp size={14}/>, t:"Confirmation بواسطة واتساب" },
               ].map((tr,i)=>(
                 <div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--ink-500)"}}>
                   <span style={{color:"var(--blue-700)"}}>{tr.ic}</span>{tr.t}
@@ -5256,9 +5395,20 @@ const TPL_BUILTIN_MODALITIES = [
   'العلاج بالثلج','العلاج اليدوي','الوخز الجاف','المساج','العلاج المائي',
 ];
 
-function TemplatesLibraryModal({ onClose, onUse }) {
+// `pickerOnly` locks the modal into a search + preview + apply flow. All
+// management actions (create/edit/duplicate/archive/delete) are hidden
+// so this same component can back both the Treatment Plan picker and,
+// when embedded without the flag, still work as a fallback library
+// browser. Management now lives in Settings → قوالب خطط العلاج.
+function TemplatesLibraryModal({ onClose, onUse, pickerOnly }) {
   window.useDataVersion && window.useDataVersion();
-  const perms = __tplPerms();
+  const rawPerms = __tplPerms();
+  // In picker mode strip every write permission — the sidebar management
+  // page is the only place to create/edit templates now.
+  const perms = pickerOnly
+    ? { canView: rawPerms.canView, canApply: rawPerms.canApply,
+        canEdit: false, canDuplicate: false, canArchive: false, canDelete: false }
+    : rawPerms;
   const [rows, setRows]         = React.useState([]);
   const [count, setCount]       = React.useState(0);
   const [loading, setLoading]   = React.useState(true);
@@ -5332,13 +5482,18 @@ function TemplatesLibraryModal({ onClose, onUse }) {
     <>
       <Modal
         open onClose={onClose}
-        title="قوالب خطط العلاج"
+        title={pickerOnly ? "اختيار قالب خطة علاج" : "قوالب خطط العلاج"}
         width={900}
         footer={<>
           <button className="btn btn-ghost" onClick={onClose}>إغلاق</button>
-          {perms.canEdit && (
+          {perms.canEdit && !pickerOnly && (
             <button className="btn btn-blue" onClick={()=>setNewOpen(true)}>
               <I.Plus size={13}/> قالب جديد
+            </button>
+          )}
+          {pickerOnly && perms.canEdit && (
+            <button className="btn btn-secondary" onClick={()=>{ onClose && onClose(); window.navigate && window.navigate("settings"); }}>
+              <I.Settings size={13}/> إدارة القوالب
             </button>
           )}
         </>}
@@ -5375,7 +5530,7 @@ function TemplatesLibraryModal({ onClose, onUse }) {
             <div style={{padding:24,textAlign:'center',border:'1px dashed var(--ink-200)',borderRadius:12,color:'var(--ink-500)'}}>
               <I.FileText size={22} style={{opacity:.4}}/>
               <div style={{marginTop:8,fontSize:13}}>لا يوجد قوالب مطابقة</div>
-              {perms.canEdit && (
+              {perms.canEdit && !pickerOnly && (
                 <button className="btn btn-blue" style={{marginTop:12}} onClick={()=>setNewOpen(true)}>
                   <I.Plus size={13}/> قالب جديد
                 </button>
@@ -6004,6 +6159,367 @@ function PreviewLine({ k, v }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// TemplatesSettingsPanel — Settings → قوالب خطط العلاج
+// Page-level manager: stats, filters, list with all CRUD buttons,
+// categories management, "قالب جديد". Same DB + events as the
+// picker modal, so any change refreshes the picker too via
+// `kinetic:templates-updated` and `kinetic:tpl-categories-updated`.
+// ═══════════════════════════════════════════════════════════════
+function TemplatesSettingsPanel() {
+  window.useDataVersion && window.useDataVersion();
+  const perms = __tplPerms();
+  const [rows, setRows]         = React.useState([]);
+  const [count, setCount]       = React.useState(0);
+  const [loading, setLoading]   = React.useState(true);
+  const [search, setSearch]     = React.useState('');
+  const [status, setStatus]     = React.useState('');       // '' = all in Settings
+  const [category, setCategory] = React.useState('');
+  const [sort, setSort]         = React.useState('recent');
+  const [editing, setEditing]   = React.useState(null);
+  const [newOpen, setNewOpen]   = React.useState(false);
+  const [preview, setPreview]   = React.useState(null);
+  const [confirmDel, setConfirmDel] = React.useState(null);
+  const [catsOpen, setCatsOpen] = React.useState(false);
+  const [cats, setCats]         = React.useState([]);
+
+  const reload = React.useCallback(async () => {
+    if (!window.Templates) return;
+    setLoading(true);
+    const res = await window.Templates.list({
+      search, status, category, sort, limit: 500, offset: 0,
+    });
+    setRows(res.rows || []); setCount(res.count || 0); setLoading(false);
+  }, [search, status, category, sort]);
+
+  const reloadCats = React.useCallback(async () => {
+    if (!window.TplCategories) return;
+    const res = await window.TplCategories.list(true);
+    setCats(res.rows || []);
+  }, []);
+
+  React.useEffect(() => {
+    reload();
+    const onT = () => reload();
+    const onC = () => { reload(); reloadCats(); };
+    window.addEventListener('kinetic:templates-updated', onT);
+    window.addEventListener('kinetic:tpl-categories-updated', onC);
+    return () => {
+      window.removeEventListener('kinetic:templates-updated', onT);
+      window.removeEventListener('kinetic:tpl-categories-updated', onC);
+    };
+  }, [reload, reloadCats]);
+
+  React.useEffect(() => { reloadCats(); }, [reloadCats]);
+
+  // Derive stats live from the current filtered rowset so they always
+  // reflect what's on screen. Total count comes from the RPC response.
+  const stats = React.useMemo(() => {
+    const active   = rows.filter(r => r.status !== 'archived').length;
+    const archived = rows.filter(r => r.status === 'archived').length;
+    return { total: count, active, archived };
+  }, [rows, count]);
+
+  const activeCats = React.useMemo(() =>
+    cats.filter(c => c.status !== 'archived'), [cats]);
+
+  async function doArchiveToggle(t) {
+    const fn = t.status === 'archived' ? window.Templates.restore : window.Templates.archive;
+    const res = await fn(t.template_id);
+    if (window.showToast) window.showToast(res.ok
+      ? (t.status === 'archived' ? 'تمت الاستعادة' : 'تمت الأرشفة')
+      : (res.error || 'تعذّر التنفيذ'),
+      res.ok ? 'success' : 'error');
+  }
+  async function doDuplicate(t) {
+    const res = await window.Templates.duplicate(t.template_id);
+    if (window.showToast) window.showToast(
+      res.ok ? 'تم إنشاء نسخة' : (res.error || 'تعذّر النسخ'),
+      res.ok ? 'success' : 'error');
+  }
+  async function doDelete(t) {
+    const res = await window.Templates.remove(t.template_id);
+    if (window.showToast) window.showToast(
+      res.ok ? 'تم حذف القالب' : (res.error || 'تعذّر الحذف'),
+      res.ok ? 'success' : 'error');
+    setConfirmDel(null);
+  }
+
+  if (!perms.canView) {
+    return (
+      <div style={{padding:24,textAlign:'center'}}>
+        <I.Lock size={30} style={{color:'var(--ink-400)',marginBottom:8}}/>
+        <div className="h3" style={{marginBottom:6}}>الوصول مقيّد</div>
+        <div className="muted" style={{fontSize:12.5}}>لا تملك صلاحية إدارة قوالب خطط العلاج.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap',marginBottom:14}}>
+        <div>
+          <div className="h2">قوالب خطط العلاج</div>
+          <div className="muted" style={{fontSize:12.5,marginTop:2}}>
+            المركز الوحيد لإدارة القوالب. الأطباء يستخدمون هذه القوالب من صفحة خطط العلاج.
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button className="btn btn-secondary" onClick={()=>setCatsOpen(true)}>
+            <I.Layers size={13}/> إدارة الفئات
+          </button>
+          {perms.canEdit && (
+            <button className="btn btn-blue" onClick={()=>setNewOpen(true)}>
+              <I.Plus size={13}/> قالب جديد
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="rgrid c-sm" style={{"--gtc":"repeat(3, 1fr)",gap:10,marginBottom:14}}>
+        <TplStatCard label="إجمالي القوالب" value={stats.total} accent="var(--blue-500)"/>
+        <TplStatCard label="نشطة"           value={stats.active} accent="var(--green)"/>
+        <TplStatCard label="مؤرشفة"         value={stats.archived} accent="var(--ink-400)"/>
+      </div>
+
+      {/* Filters */}
+      <div style={{display:'grid',gridTemplateColumns:'1.4fr 1fr 1fr 1fr',gap:8,marginBottom:12}}>
+        <div style={{position:'relative'}}>
+          <I.Search size={14} style={{position:'absolute',left:11,top:'50%',transform:'translateY(-50%)',color:'var(--ink-400)'}}/>
+          <input className="input" placeholder="ابحث بالاسم/التشخيص/التمرين/الطريقة…" value={search} onChange={e=>setSearch(e.target.value)} style={{paddingLeft:32}}/>
+        </div>
+        <select className="input" value={category} onChange={e=>setCategory(e.target.value)}>
+          <option value="">كل الفئات</option>
+          {activeCats.map(c=><option key={c.category_id} value={c.name}>{c.name}</option>)}
+        </select>
+        <select className="input" value={status} onChange={e=>setStatus(e.target.value)}>
+          <option value="">كل الحالات</option>
+          <option value="active">النشطة</option>
+          <option value="archived">المؤرشفة</option>
+        </select>
+        <select className="input" value={sort} onChange={e=>setSort(e.target.value)}>
+          <option value="recent">الأحدث</option>
+          <option value="oldest">الأقدم</option>
+          <option value="usage">الأكثر استخدامًا</option>
+          <option value="name">أبجدي</option>
+        </select>
+      </div>
+
+      {/* List */}
+      {loading && <div className="muted" style={{fontSize:13,padding:14,textAlign:'center'}}>جارٍ التحميل…</div>}
+      {!loading && rows.length === 0 && (
+        <div style={{padding:24,textAlign:'center',border:'1px dashed var(--ink-200)',borderRadius:12,color:'var(--ink-500)'}}>
+          <I.FileText size={22} style={{opacity:.4}}/>
+          <div style={{marginTop:8,fontSize:13}}>لا يوجد قوالب مطابقة</div>
+          {perms.canEdit && (
+            <button className="btn btn-blue" style={{marginTop:12}} onClick={()=>setNewOpen(true)}>
+              <I.Plus size={13}/> قالب جديد
+            </button>
+          )}
+        </div>
+      )}
+      {!loading && rows.length > 0 && (
+        <div style={{border:'1px solid var(--ink-100)',borderRadius:12,overflow:'hidden'}}>
+          {rows.map(t => (
+            <TemplateRow
+              key={t.template_id}
+              t={t}
+              perms={perms}
+              onUse={()=>{
+                // From Settings we can still apply — but only if a picker/target
+                // makes sense. Here we just preview so admins get a peek.
+                setPreview(t.template_id);
+              }}
+              onPreview={()=>setPreview(t.template_id)}
+              onEdit={()=>setEditing(t.template_id)}
+              onDuplicate={()=>doDuplicate(t)}
+              onArchiveToggle={()=>doArchiveToggle(t)}
+              onDelete={()=>setConfirmDel(t)}
+            />
+          ))}
+        </div>
+      )}
+      <div className="muted" style={{fontSize:11.5,marginTop:8}}>الإجمالي: {count}</div>
+
+      {/* Modals */}
+      {newOpen && (
+        <TemplateEditorModal
+          templateId={null}
+          onClose={()=>setNewOpen(false)}
+          onSaved={()=>{ setNewOpen(false); reload(); }}
+        />
+      )}
+      {editing && (
+        <TemplateEditorModal
+          templateId={editing}
+          onClose={()=>setEditing(null)}
+          onSaved={()=>{ setEditing(null); reload(); }}
+        />
+      )}
+      {preview && (
+        <TemplatePreviewModal
+          templateId={preview}
+          onClose={()=>setPreview(null)}
+          onUse={null}
+        />
+      )}
+      {confirmDel && (
+        <Modal open onClose={()=>setConfirmDel(null)} title="تأكيد الحذف" width={440}
+          footer={<>
+            <button className="btn btn-ghost" onClick={()=>setConfirmDel(null)}>إلغاء</button>
+            <button className="btn btn-red" onClick={()=>doDelete(confirmDel)} style={{background:'var(--red)',color:'#fff'}}>حذف نهائي</button>
+          </>}>
+          <div style={{fontSize:13.5}}>هل تريد حذف <strong>{confirmDel.name}</strong> نهائيًا؟ لا يمكن التراجع.</div>
+          {(confirmDel.usage_count || 0) > 0 && (
+            <div style={{marginTop:10,padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#991b1b'}}>
+              هذا القالب مستخدم في {confirmDel.usage_count} خطة — سيرفض النظام الحذف. استخدم الأرشفة بدلاً منه.
+            </div>
+          )}
+        </Modal>
+      )}
+      {catsOpen && (
+        <TemplateCategoriesModal
+          cats={cats}
+          perms={perms}
+          onClose={()=>setCatsOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TplStatCard({ label, value, accent }) {
+  return (
+    <div className="card" style={{padding:14,borderRight:`3px solid ${accent}`,display:'flex',flexDirection:'column',gap:4}}>
+      <div className="muted" style={{fontSize:11.5}}>{label}</div>
+      <div style={{fontSize:22,fontWeight:600}}>{value}</div>
+    </div>
+  );
+}
+
+// ── Category manager ────────────────────────────────────────────
+function TemplateCategoriesModal({ cats, perms, onClose }) {
+  const [name, setName]           = React.useState('');
+  const [description, setDescription] = React.useState('');
+  const [sortOrder, setSortOrder] = React.useState('');
+  const [editingId, setEditingId] = React.useState(null);
+  const [saving, setSaving]       = React.useState(false);
+  const [error, setError]         = React.useState('');
+  const [showArchived, setShowArchived] = React.useState(false);
+  const canWrite = perms.canEdit;
+
+  function resetForm() {
+    setEditingId(null); setName(''); setDescription(''); setSortOrder(''); setError('');
+  }
+  function loadIntoForm(c) {
+    setEditingId(c.category_id);
+    setName(c.name || '');
+    setDescription(c.description || '');
+    setSortOrder(c.sort_order != null ? String(c.sort_order) : '');
+    setError('');
+  }
+  async function doSave() {
+    setError('');
+    const trimmed = name.trim();
+    if (!trimmed) { setError('الاسم مطلوب'); return; }
+    setSaving(true);
+    const payload = {
+      name: trimmed,
+      description: description.trim() || null,
+      sort_order: sortOrder === '' ? null : Number(sortOrder),
+    };
+    const res = editingId
+      ? await window.TplCategories.update(editingId, payload)
+      : await window.TplCategories.create(payload);
+    setSaving(false);
+    if (!res.ok) { setError(res.error || 'تعذّر الحفظ'); return; }
+    if (window.showToast) window.showToast(editingId ? 'تم تحديث الفئة' : 'تمت إضافة الفئة', 'success');
+    resetForm();
+  }
+  async function doArchiveToggle(c) {
+    const next = c.status === 'archived' ? 'active' : 'archived';
+    const fn   = next === 'archived' ? window.TplCategories.archive : window.TplCategories.restore;
+    const res  = await fn(c.category_id);
+    if (window.showToast) window.showToast(res.ok
+      ? (next === 'archived' ? 'تم الأرشفة' : 'تمت الاستعادة')
+      : (res.error || 'تعذّر التنفيذ'),
+      res.ok ? 'success' : 'error');
+  }
+
+  const visible = showArchived ? cats : cats.filter(c => c.status !== 'archived');
+
+  return (
+    <Modal open onClose={onClose} title="فئات القوالب" width={620}
+      footer={<button className="btn btn-ghost" onClick={onClose}>إغلاق</button>}>
+      <div style={{display:'grid',gap:14}}>
+        <div style={{maxHeight:220,overflowY:'auto',border:'1px solid var(--ink-100)',borderRadius:10}}>
+          {visible.length === 0 && (
+            <div className="muted" style={{padding:16,textAlign:'center',fontSize:12.5}}>لا توجد فئات بعد</div>
+          )}
+          {visible.map(c => {
+            const archived = c.status === 'archived';
+            return (
+              <div key={c.category_id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderBottom:'1px solid var(--ink-100)',opacity: archived ? .6 : 1}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:13,fontWeight:500}}>
+                    {c.name}
+                    {archived && <span className="badge b-grey" style={{marginRight:8,fontSize:10.5}}>مؤرشف</span>}
+                  </div>
+                  {c.description && <div className="muted" style={{fontSize:11.5}}>{c.description}</div>}
+                </div>
+                {canWrite && (
+                  <>
+                    <button className="btn btn-ghost" style={{fontSize:11.5,padding:'4px 8px'}} onClick={()=>loadIntoForm(c)}>تعديل</button>
+                    <button className="btn btn-ghost" style={{fontSize:11.5,padding:'4px 8px',color: archived ? 'var(--green)' : 'var(--amber-700, #b45309)'}} onClick={()=>doArchiveToggle(c)}>
+                      {archived ? 'استعادة' : 'أرشفة'}
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--ink-600)'}}>
+          <input type="checkbox" checked={showArchived} onChange={e=>setShowArchived(e.target.checked)}/>
+          عرض المؤرشفة
+        </label>
+
+        {canWrite && (
+          <div className="rgrid c-sm" style={{"--gtc":"1fr 1fr 100px",gap:10,alignItems:'end'}}>
+            <Field label="اسم الفئة" required>
+              <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="مثال: تأهيل الركبة"/>
+            </Field>
+            <Field label="الوصف">
+              <input className="input" value={description} onChange={e=>setDescription(e.target.value)} placeholder="اختياري"/>
+            </Field>
+            <Field label="الترتيب">
+              <input className="input" type="number" value={sortOrder} onChange={e=>setSortOrder(e.target.value)}/>
+            </Field>
+          </div>
+        )}
+        {canWrite && (
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+            {editingId && (
+              <button className="btn btn-ghost" onClick={resetForm} disabled={saving}>إلغاء التعديل</button>
+            )}
+            <button className="btn btn-blue" onClick={doSave} disabled={saving}>
+              <I.Check size={13}/> {saving ? 'جارٍ الحفظ…' : (editingId ? 'حفظ التعديل' : 'إضافة الفئة')}
+            </button>
+          </div>
+        )}
+        {error && (
+          <div style={{padding:'10px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,color:'#b91c1c',fontSize:12.5}}>
+            {error}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 Object.assign(window, {
   TemplatesLibraryModal, TemplateEditorModal, TemplatePreviewModal,
+  TemplatesSettingsPanel, TemplateCategoriesModal,
 });

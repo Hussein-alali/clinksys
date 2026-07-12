@@ -490,7 +490,10 @@ function printHTML(title, bodyHtml) {
 // that would trip PGRST204 on the strict schema.
 const DATA_TABLES = {
   patients:   { key: "patients",   pk: "patient_id",  ls: "kinetic.patients",
-                cols: ["patient_id","name","phone","age","gender","diagnosis","notes","therapist_id","created_at"] },
+                cols: ["patient_id","name","phone","age","gender","diagnosis","notes","therapist_id","created_at",
+                       "medical_file_no","national_id","whatsapp","email","date_of_birth","address","occupation",
+                       "emergency_name","emergency_phone","doctor_id","medical_history","allergies","medications",
+                       "insurance_info","status","updated_at"] },
   appts:      { key: "bookings",   pk: "booking_id",  ls: "kinetic.bookings",
                 cols: ["booking_id","patient_id","therapist_id","doctor_id","department_id","date","time","status","notes","created_at"] },
   sessions:   { key: "sessions",   pk: "session_id",  ls: "kinetic.sessions",
@@ -2097,6 +2100,106 @@ const Templates = {
 };
 window.Templates = Templates;
 
+// ══════════════════════════════════════════════════════════════
+// TplCategories — DB-authoritative categories for treatment plan
+// templates. Managed from Settings → قوالب خطط العلاج. Renaming
+// propagates to templates.category server-side so the picker stays
+// consistent. LS mirror keeps demo/offline mode working.
+// ══════════════════════════════════════════════════════════════
+const LS_TPL_CATEGORIES = 'kinetic.template_categories.v1';
+
+function __tplCatDispatch() {
+  window.dispatchEvent(new CustomEvent('kinetic:tpl-categories-updated'));
+}
+
+async function listTemplateCategories(includeArchived = false) {
+  if (sb) {
+    const { data, error } = await sb.rpc('list_template_categories', {
+      p_include_archived: !!includeArchived,
+    });
+    if (error) return { ok: false, error: error.message, rows: [] };
+    const rows = (data && data.rows) || [];
+    writeLS(LS_TPL_CATEGORIES, rows);
+    return { ok: true, rows };
+  }
+  const rows = readLS(LS_TPL_CATEGORIES, []);
+  const filtered = includeArchived ? rows : rows.filter(r => r.status !== 'archived');
+  return { ok: true, rows: filtered };
+}
+
+async function upsertTemplateCategory(category_id, payload) {
+  const name = String((payload && payload.name) || '').trim();
+  if (!name) return { ok: false, error: 'اسم الفئة مطلوب' };
+  if (sb) {
+    const { data, error } = await sb.rpc('upsert_template_category', {
+      p_category_id: category_id || null,
+      p_payload: payload,
+    });
+    if (error) return { ok: false, error: error.message || 'تعذّر الحفظ' };
+    __tplCatDispatch();
+    return { ok: true, category_id: data && data.category_id, name };
+  }
+  // LS fallback
+  const rows = readLS(LS_TPL_CATEGORIES, []);
+  const dupIdx = rows.findIndex(r =>
+    String(r.name || '').trim().toLowerCase() === name.toLowerCase()
+    && r.category_id !== category_id);
+  if (dupIdx >= 0) return { ok: false, error: 'اسم الفئة موجود مسبقًا' };
+  const id = category_id || ('TPC-LS-' + Date.now().toString(36));
+  const existing = rows.find(r => r.category_id === id);
+  const now = new Date().toISOString();
+  const next = existing
+    ? rows.map(r => r.category_id === id ? {
+        ...r, name,
+        description: (payload && payload.description) || null,
+        sort_order: (payload && payload.sort_order != null) ? Number(payload.sort_order) : r.sort_order,
+        updated_at: now,
+      } : r)
+    : [...rows, {
+        category_id: id, name,
+        description: (payload && payload.description) || null,
+        sort_order: (payload && payload.sort_order != null) ? Number(payload.sort_order) : null,
+        status: 'active', created_at: now, updated_at: now,
+      }];
+  // If renaming, propagate to LS-mirrored templates
+  if (existing && existing.name !== name) {
+    const tpls = readLS(LS_TEMPLATES, []);
+    writeLS(LS_TEMPLATES, tpls.map(t => t.category === existing.name ? { ...t, category: name } : t));
+    __tplDispatch('update', null);
+  }
+  writeLS(LS_TPL_CATEGORIES, next);
+  __tplCatDispatch();
+  return { ok: true, category_id: id, name };
+}
+
+async function setTemplateCategoryStatus(category_id, status) {
+  if (!category_id) return { ok: false, error: 'معرّف مفقود' };
+  if (status !== 'active' && status !== 'archived') return { ok: false, error: 'حالة غير صحيحة' };
+  if (sb) {
+    const { error } = await sb.rpc('set_template_category_status', {
+      p_category_id: category_id, p_status: status,
+    });
+    if (error) return { ok: false, error: error.message || 'تعذّر التنفيذ' };
+    __tplCatDispatch();
+    return { ok: true, category_id, status };
+  }
+  const rows = readLS(LS_TPL_CATEGORIES, []);
+  const next = rows.map(r => r.category_id === category_id
+    ? { ...r, status, updated_at: new Date().toISOString() } : r);
+  writeLS(LS_TPL_CATEGORIES, next);
+  __tplCatDispatch();
+  return { ok: true, category_id, status };
+}
+
+const TplCategories = {
+  list:    listTemplateCategories,
+  create:  (payload) => upsertTemplateCategory(null, payload),
+  update:  upsertTemplateCategory,
+  archive: (id) => setTemplateCategoryStatus(id, 'archived'),
+  restore: (id) => setTemplateCategoryStatus(id, 'active'),
+};
+window.TplCategories = TplCategories;
+
 // ── Public API ────────────────────────────────────────────────
 Object.assign(window, {
   loadClinic, saveClinic,
@@ -2105,6 +2208,6 @@ Object.assign(window, {
   signInEmail, signOut, getSession, onAuthChange,
   adminCreateUser, sendPasswordReset, updateOwnPassword, updateOwnProfile, updateStaffMember,
   startDictation, printHTML, escHtml,
-  KineticData, QuickPay, TxMethods, InvoicesAPI, PaymentReceipts, Templates,
+  KineticData, QuickPay, TxMethods, InvoicesAPI, PaymentReceipts, Templates, TplCategories,
   uploadPatientFile, listPatientFiles, removePatientFile,
 });
