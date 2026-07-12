@@ -14,13 +14,12 @@
 //     role key (from env, never shipped to the browser) to call
 //     `auth.admin.createUser`.
 //
-// Deploy:
+// Deploy (see also deploy-edge-function.sh in the repo root):
 //   supabase functions deploy admin-create-user --no-verify-jwt
 //
-// Env required (Dashboard → Functions → admin-create-user → Secrets):
-//   • SUPABASE_URL
-//   • SUPABASE_ANON_KEY
-//   • SUPABASE_SERVICE_ROLE_KEY
+// Env: SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY are
+// injected into Edge Functions automatically by the platform — nothing
+// to configure manually.
 // ═══════════════════════════════════════════════════════════════════════
 
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
@@ -57,7 +56,15 @@ serve(async (req: Request) => {
   if (userErr || !userData?.user)
     return json({ ok: false, error: "invalid_token" }, 401);
 
+  // Role source of truth is the staff table (same as public.app_role()
+  // in RLS); JWT metadata is only a fallback for legacy accounts.
+  const svc = createClient(url, serviceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { data: staffRow } = await svc
+    .from("staff").select("role").eq("auth_uid", userData.user.id).maybeSingle();
   const callerRole =
+    staffRow?.role ??
     (userData.user.app_metadata as any)?.role ??
     (userData.user.user_metadata as any)?.role ??
     null;
@@ -85,9 +92,7 @@ serve(async (req: Request) => {
   // 3) Create the auth user with the service role. `email_confirm: true`
   // skips the confirmation email entirely — this is the internal-staff
   // workflow the PRD asks for.
-  const admin = createClient(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
+  const admin = svc;
 
   const { data: created, error: createErr } = await admin.auth.admin.createUser({
     email,
