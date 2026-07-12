@@ -678,6 +678,7 @@ async function upsertRow(name, row) {
   if (window.DATA) window.DATA[name] = next;
   writeLS(cfg.ls, next);
 
+  let __ok = true, __error = null;
   if (sb) {
     // Only send columns the DB knows about.
     const dbRow = {};
@@ -685,12 +686,24 @@ async function upsertRow(name, row) {
       if (normalized[c] !== undefined) dbRow[c] = normalized[c];
     }
     if (dbRow[cfg.pk] == null) {
+      __ok = false; __error = `missing PK ${cfg.pk}`;
       console.warn(`upsertRow ${name}: missing PK ${cfg.pk}`, row);
     } else {
       const { error } = await sb.from(cfg.key).upsert(dbRow, { onConflict: cfg.pk });
-      if (error) console.warn(`upsertRow ${name} failed`, error.message || error);
+      if (error) {
+        __ok = false;
+        __error = error.message || String(error);
+        console.warn(`upsertRow ${name} failed`, __error);
+      }
     }
+  } else {
+    __ok = false;
+    __error = "no database connection";
   }
+  // Attach ok/error so callers who care (import, forms) can react;
+  // fire-and-forget callers keep working unchanged.
+  normalized._ok = __ok;
+  normalized._error = __error;
   // Rows written schema-shaped (e.g. bulk import) need the UI aliases too.
   if (window.normalizeDomainData && window.DATA) window.normalizeDomainData(window.DATA);
   window.dispatchEvent(new CustomEvent("kinetic:data-updated", { detail: { table: name } }));

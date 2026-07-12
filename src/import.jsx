@@ -76,6 +76,18 @@ function HistoricalImportPage() {
     return Object.keys(e).length === 0;
   }
 
+  // Try to resolve the assigned name to an existing therapist id.
+  function resolveTherapistId(name) {
+    const q = String(name || "").trim().toLowerCase();
+    if (!q) return null;
+    const list = (window.DATA && window.DATA.therapists) || [];
+    const hit = list.find(t => String(t.name || "").trim().toLowerCase() === q);
+    return hit ? (hit.id || hit.therapist_id || null) : null;
+  }
+  function normalizePhone(p) {
+    return String(p || "").replace(/[^\d]/g, "");
+  }
+
   async function save() {
     if (saving) return;
     if (!validate()) {
@@ -85,6 +97,18 @@ function HistoricalImportPage() {
       firstBad && firstBad.focus();
       return;
     }
+
+    // Fast dedup: warn if the same phone is already in memory.
+    const phoneKey = normalizePhone(form.phone);
+    if (phoneKey) {
+      const existing = ((window.DATA && window.DATA.patients) || []).find(
+        p => normalizePhone(p.phone) === phoneKey
+      );
+      if (existing && !window.confirm(`يوجد مريض بنفس رقم الهاتف: ${existing.name}. متابعة إضافة سجل جديد؟`)) {
+        return;
+      }
+    }
+
     setSaving(true);
     try {
       const pid = "P-" + Date.now().toString().slice(-8);
@@ -98,19 +122,27 @@ function HistoricalImportPage() {
         phone: form.phone.trim(),
         gender: (form.gender === "M" || form.gender === "F") ? form.gender : null,
         age: Number.isFinite(ageNum) ? ageNum : null,
+        date_of_birth: form.dob || null,
+        address: form.address.trim() || null,
         diagnosis: form.diagnosis.trim(),
         notes: form.notes.trim(),
-        created_at: form.registered,
-        // UI-only fields (ignored by the DB column whitelist, kept for display)
+        therapist_id: resolveTherapistId(form.assigned),
+        status: form.status || null,
+        created_at: form.registered ? new Date(form.registered).toISOString() : new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        // UI-only aliases the schema whitelist strips out but the mirror uses.
         diag: form.diagnosis.trim(),
-        address: form.address.trim(),
         th: form.assigned.trim(),
         registered: form.registered,
-        status: form.status,
         remain: 0,
       };
 
-      if (window.KineticData) await window.KineticData.upsert("patients", row);
+      const res = window.KineticData ? await window.KineticData.upsert("patients", row) : null;
+      if (!res || res._ok === false) {
+        const msg = (res && res._error) || "تعذّر حفظ المريض في قاعدة البيانات";
+        if (window.showToast) window.showToast(msg, "error");
+        return;
+      }
 
       // Save patient first, then upload + link every file by the new patient_id.
       let uploaded = 0;
