@@ -209,6 +209,7 @@ create table if not exists therapists (
   "load"      int default 0,
   max         int default 8,
   color       text default '#7BBDE8',
+  auth_uid    uuid,                             -- links to auth.users.id (optional)
   created_at  timestamptz default now()
 );
 
@@ -803,8 +804,8 @@ create policy "staff delete patient files bucket" on storage.objects for delete 
 
 -- ═══════════════════════════════════════════════════════════════
 -- Treatment Methods ("طرق علاج أخرى")
--- Shared library of treatment modalities that doctors can extend
--- at run-time. Feeds the modality chips on TreatmentPlanCreate.
+-- Shared library of treatment methods that doctors can extend
+-- at run-time. Feeds the method chips on TreatmentPlanCreate.
 -- ═══════════════════════════════════════════════════════════════
 create table if not exists treatment_methods (
   method_id        text primary key,
@@ -1232,7 +1233,7 @@ grant execute on function public.delete_payment_receipt(text) to authenticated;
 -- ═══════════════════════════════════════════════════════════════
 -- Treatment Plan Templates ("قوالب خطط العلاج")
 -- Full library of reusable treatment plans doctors can apply to
--- patients. Exercises/methods/modalities/goals live inline as
+-- patients. Exercises/methods/goals live inline as
 -- JSONB arrays so a template is one atomic row + one round-trip.
 -- Versions and usage are tracked in side tables for restore &
 -- statistics. Receptionists have no access. Doctors + admins can
@@ -1247,7 +1248,6 @@ create table if not exists treatment_templates (
   goals                  jsonb not null default '[]'::jsonb,
   exercises              jsonb not null default '[]'::jsonb,
   methods                jsonb not null default '[]'::jsonb,
-  modalities             jsonb not null default '[]'::jsonb,
   home_instructions      text,
   notes                  text,
   warnings               text,
@@ -1388,7 +1388,7 @@ begin
 
   insert into treatment_templates (
     template_id, name, category, diagnosis, body_part,
-    goals, exercises, methods, modalities,
+    goals, exercises, methods,
     home_instructions, notes, warnings, followup_instructions,
     estimated_sessions, weekly_frequency, expected_recovery_days,
     status, version, created_by, created_by_name, updated_by, updated_by_name
@@ -1401,7 +1401,6 @@ begin
     coalesce(p_payload->'goals','[]'::jsonb),
     coalesce(p_payload->'exercises','[]'::jsonb),
     coalesce(p_payload->'methods','[]'::jsonb),
-    coalesce(p_payload->'modalities','[]'::jsonb),
     nullif(p_payload->>'home_instructions',''),
     nullif(p_payload->>'notes',''),
     nullif(p_payload->>'warnings',''),
@@ -1449,7 +1448,6 @@ begin
     goals                  = coalesce(p_payload->'goals', goals),
     exercises              = coalesce(p_payload->'exercises', exercises),
     methods                = coalesce(p_payload->'methods', methods),
-    modalities             = coalesce(p_payload->'modalities', modalities),
     home_instructions      = coalesce(nullif(p_payload->>'home_instructions',''), home_instructions),
     notes                  = coalesce(nullif(p_payload->>'notes',''), notes),
     warnings               = coalesce(nullif(p_payload->>'warnings',''), warnings),
@@ -1496,7 +1494,7 @@ begin
 
   insert into treatment_templates (
     template_id, name, category, diagnosis, body_part,
-    goals, exercises, methods, modalities,
+    goals, exercises, methods,
     home_instructions, notes, warnings, followup_instructions,
     estimated_sessions, weekly_frequency, expected_recovery_days,
     status, version, created_by, created_by_name, updated_by, updated_by_name
@@ -1504,7 +1502,7 @@ begin
     v_new_id,
     coalesce(nullif(btrim(p_new_name),''), v_src.name || ' — نسخة'),
     v_src.category, v_src.diagnosis, v_src.body_part,
-    v_src.goals, v_src.exercises, v_src.methods, v_src.modalities,
+    v_src.goals, v_src.exercises, v_src.methods,
     v_src.home_instructions, v_src.notes, v_src.warnings, v_src.followup_instructions,
     v_src.estimated_sessions, v_src.weekly_frequency, v_src.expected_recovery_days,
     'active', 1, v_uid,
@@ -1748,7 +1746,6 @@ begin
     goals                  = coalesce(v_snap->'goals','[]'::jsonb),
     exercises              = coalesce(v_snap->'exercises','[]'::jsonb),
     methods                = coalesce(v_snap->'methods','[]'::jsonb),
-    modalities             = coalesce(v_snap->'modalities','[]'::jsonb),
     home_instructions      = v_snap->>'home_instructions',
     notes                  = v_snap->>'notes',
     warnings               = v_snap->>'warnings',
@@ -2256,7 +2253,7 @@ grant execute on function public.delete_payment_receipt(text) to authenticated;
 -- ═════════════════════════════════════════════════════════════
 -- 2. TREATMENT PLAN TEMPLATES ("قوالب خطط العلاج")
 -- Full library of reusable treatment plans doctors can apply to
--- patients. Exercises/methods/modalities/goals live inline as
+-- patients. Exercises/methods/goals live inline as
 -- JSONB arrays so a template is one atomic row + one round-trip.
 -- Versions and usage are tracked in side tables for restore &
 -- statistics. Receptionists have no access. Doctors + admins can
@@ -2271,7 +2268,6 @@ create table if not exists treatment_templates (
   goals                  jsonb not null default '[]'::jsonb,
   exercises              jsonb not null default '[]'::jsonb,
   methods                jsonb not null default '[]'::jsonb,
-  modalities             jsonb not null default '[]'::jsonb,
   home_instructions      text,
   notes                  text,
   warnings               text,
@@ -2412,7 +2408,7 @@ begin
 
   insert into treatment_templates (
     template_id, name, category, diagnosis, body_part,
-    goals, exercises, methods, modalities,
+    goals, exercises, methods,
     home_instructions, notes, warnings, followup_instructions,
     estimated_sessions, weekly_frequency, expected_recovery_days,
     status, version, created_by, created_by_name, updated_by, updated_by_name
@@ -2425,7 +2421,6 @@ begin
     coalesce(p_payload->'goals','[]'::jsonb),
     coalesce(p_payload->'exercises','[]'::jsonb),
     coalesce(p_payload->'methods','[]'::jsonb),
-    coalesce(p_payload->'modalities','[]'::jsonb),
     nullif(p_payload->>'home_instructions',''),
     nullif(p_payload->>'notes',''),
     nullif(p_payload->>'warnings',''),
@@ -2473,7 +2468,6 @@ begin
     goals                  = coalesce(p_payload->'goals', goals),
     exercises              = coalesce(p_payload->'exercises', exercises),
     methods                = coalesce(p_payload->'methods', methods),
-    modalities             = coalesce(p_payload->'modalities', modalities),
     home_instructions      = coalesce(nullif(p_payload->>'home_instructions',''), home_instructions),
     notes                  = coalesce(nullif(p_payload->>'notes',''), notes),
     warnings               = coalesce(nullif(p_payload->>'warnings',''), warnings),
@@ -2520,7 +2514,7 @@ begin
 
   insert into treatment_templates (
     template_id, name, category, diagnosis, body_part,
-    goals, exercises, methods, modalities,
+    goals, exercises, methods,
     home_instructions, notes, warnings, followup_instructions,
     estimated_sessions, weekly_frequency, expected_recovery_days,
     status, version, created_by, created_by_name, updated_by, updated_by_name
@@ -2528,7 +2522,7 @@ begin
     v_new_id,
     coalesce(nullif(btrim(p_new_name),''), v_src.name || ' — نسخة'),
     v_src.category, v_src.diagnosis, v_src.body_part,
-    v_src.goals, v_src.exercises, v_src.methods, v_src.modalities,
+    v_src.goals, v_src.exercises, v_src.methods,
     v_src.home_instructions, v_src.notes, v_src.warnings, v_src.followup_instructions,
     v_src.estimated_sessions, v_src.weekly_frequency, v_src.expected_recovery_days,
     'active', 1, v_uid,
@@ -2772,7 +2766,6 @@ begin
     goals                  = coalesce(v_snap->'goals','[]'::jsonb),
     exercises              = coalesce(v_snap->'exercises','[]'::jsonb),
     methods                = coalesce(v_snap->'methods','[]'::jsonb),
-    modalities             = coalesce(v_snap->'modalities','[]'::jsonb),
     home_instructions      = v_snap->>'home_instructions',
     notes                  = v_snap->>'notes',
     warnings               = v_snap->>'warnings',
@@ -3497,7 +3490,6 @@ create table if not exists treatments (
   goals                  jsonb not null default '[]'::jsonb,
   exercises              jsonb not null default '[]'::jsonb,
   methods                jsonb not null default '[]'::jsonb,
-  modalities             jsonb not null default '[]'::jsonb,
   home_instructions      text,
   notes                  text,
   warnings               text,
@@ -3593,7 +3585,6 @@ begin
       'goals',                  v_tpl.goals,
       'exercises',              v_tpl.exercises,
       'methods',                v_tpl.methods,
-      'modalities',             v_tpl.modalities,
       'home_instructions',      v_tpl.home_instructions,
       'notes',                  v_tpl.notes,
       'warnings',               v_tpl.warnings,
@@ -3610,7 +3601,7 @@ begin
     treatment_id, patient_id, therapist_id, therapist_name,
     template_id, template_version, template_name, template_snapshot,
     name, category, diagnosis, body_part,
-    goals, exercises, methods, modalities,
+    goals, exercises, methods,
     home_instructions, notes, warnings, followup_instructions,
     estimated_sessions, weekly_frequency, expected_recovery_days,
     attachments, extra_fields, treatment_date, start_date, status,
@@ -3623,7 +3614,6 @@ begin
     coalesce(v_data->'goals','[]'::jsonb),
     coalesce(v_data->'exercises','[]'::jsonb),
     coalesce(v_data->'methods','[]'::jsonb),
-    coalesce(v_data->'modalities','[]'::jsonb),
     v_data->>'home_instructions', v_data->>'notes', v_data->>'warnings', v_data->>'followup_instructions',
     nullif(v_data->>'estimated_sessions','')::int,
     nullif(v_data->>'weekly_frequency','')::int,
@@ -3708,7 +3698,6 @@ begin
     goals                  = coalesce(p_payload->'goals', goals),
     exercises              = coalesce(p_payload->'exercises', exercises),
     methods                = coalesce(p_payload->'methods', methods),
-    modalities             = coalesce(p_payload->'modalities', modalities),
     home_instructions      = case when p_payload ? 'home_instructions'     then p_payload->>'home_instructions'     else home_instructions end,
     notes                  = case when p_payload ? 'notes'                 then p_payload->>'notes'                 else notes end,
     warnings               = case when p_payload ? 'warnings'              then p_payload->>'warnings'              else warnings end,
