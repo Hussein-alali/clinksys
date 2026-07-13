@@ -10,7 +10,7 @@
 -- ║  Idempotent: safe to run on a FRESH project or an EXISTING one,    ║
 -- ║  and safe to re-run any time. RLS stays enabled on every table.    ║
 -- ║                                                                    ║
--- ║  Generated from the individual files on 2026-07-13; if you edit    ║
+-- ║  Consolidated master file, regenerated 2026-07-13; if you edit    ║
 -- ║  those, regenerate or re-apply this file.                          ║
 -- ╚══════════════════════════════════════════════════════════════════╝
 
@@ -2175,80 +2175,6 @@ begin
 end;
 $$;
 
-grant execute on function public.list_invoices_filtered(timestamptz,timestamptz,text,text,int,int)
-  to authenticated;
-
--- ── 1b. payment_receipts table + RLS ─────────────────────────
--- Every uploaded receipt file (image/PDF) tied to a payment row.
--- Files live in Supabase Storage; this table stores metadata + path.
--- Soft-delete via deleted_at so the payment is never lost.
-create table if not exists payment_receipts (
-  receipt_id       text primary key,
-  payment_id       text references payments(payment_id) on delete cascade,
-  invoice_id       text references invoices(invoice_id) on delete set null,
-  patient_id       text references patients(patient_id) on delete cascade,
-  file_name        text,
-  stored_name      text,
-  storage_path     text,
-  file_url         text,
-  file_type        text,
-  file_size        int,
-  uploaded_by      uuid,
-  uploaded_by_name text,
-  uploaded_at      timestamptz default now(),
-  deleted_at       timestamptz,
-  deleted_by       uuid
-);
-create index if not exists payment_receipts_payment_idx  on payment_receipts(payment_id);
-create index if not exists payment_receipts_invoice_idx  on payment_receipts(invoice_id);
-create index if not exists payment_receipts_patient_idx  on payment_receipts(patient_id);
-
-alter table payment_receipts enable row level security;
-
-drop policy if exists "staff read receipts" on payment_receipts;
-create policy "staff read receipts" on payment_receipts for select using (
-  public.app_role() in ('admin','receptionist','doctor','therapist')
-);
-drop policy if exists "reception write receipts" on payment_receipts;
-create policy "reception write receipts" on payment_receipts for insert
-  with check (public.app_role() in ('admin','receptionist'));
-drop policy if exists "reception update receipts" on payment_receipts;
-create policy "reception update receipts" on payment_receipts for update using (
-  public.app_role() in ('admin','receptionist')
-);
-
--- ── 1c. delete_payment_receipt RPC ───────────────────────────
--- Admin-only soft-delete + audit log entry.
-create or replace function public.delete_payment_receipt(
-  p_receipt_id text
-) returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_role text := public.app_role();
-  v_row  payment_receipts%rowtype;
-begin
-  if v_role <> 'admin' then
-    raise exception 'غير مصرح — الحذف مقتصر على المدير';
-  end if;
-  select * into v_row from payment_receipts where receipt_id = p_receipt_id for update;
-  if not found then raise exception 'الإيصال غير موجود'; end if;
-  if v_row.deleted_at is not null then
-    return jsonb_build_object('receipt_id', p_receipt_id, 'already_deleted', true);
-  end if;
-  update payment_receipts
-    set deleted_at = now(), deleted_by = auth.uid()
-    where receipt_id = p_receipt_id;
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (auth.uid(), v_role, 'receipt_delete', 'payment_receipts', p_receipt_id,
-    jsonb_build_object('payment_id', v_row.payment_id, 'invoice_id', v_row.invoice_id));
-  return jsonb_build_object('receipt_id', p_receipt_id, 'deleted', true);
-end;
-$$;
-grant execute on function public.delete_payment_receipt(text) to authenticated;
-
 
 -- ═════════════════════════════════════════════════════════════
 -- 2. TREATMENT PLAN TEMPLATES ("قوالب خطط العلاج")
@@ -2259,535 +2185,7 @@ grant execute on function public.delete_payment_receipt(text) to authenticated;
 -- statistics. Receptionists have no access. Doctors + admins can
 -- create/edit; therapists can view + apply.
 -- ═════════════════════════════════════════════════════════════
-create table if not exists treatment_templates (
-  template_id            text primary key,
-  name                   text not null,
-  category               text,
-  diagnosis              text,
-  body_part              text,
-  goals                  jsonb not null default '[]'::jsonb,
-  exercises              jsonb not null default '[]'::jsonb,
-  methods                jsonb not null default '[]'::jsonb,
-  home_instructions      text,
-  notes                  text,
-  warnings               text,
-  followup_instructions  text,
-  estimated_sessions     int,
-  weekly_frequency       int,
-  expected_recovery_days int,
-  status                 text not null default 'active'
-                           check (status in ('active','archived')),
-  version                int  not null default 1,
-  usage_count            int  not null default 0,
-  last_used_at           timestamptz,
-  avg_recovery_days      numeric,
-  completion_rate        numeric,
-  created_by             uuid,
-  created_by_name        text,
-  updated_by             uuid,
-  updated_by_name        text,
-  created_at             timestamptz default now(),
-  updated_at             timestamptz default now()
-);
-create index if not exists tx_templates_status_idx    on treatment_templates(status);
-create index if not exists tx_templates_category_idx  on treatment_templates(category);
-create index if not exists tx_templates_creator_idx   on treatment_templates(created_by);
-create index if not exists tx_templates_usage_idx     on treatment_templates(usage_count desc);
-create index if not exists tx_templates_created_idx   on treatment_templates(created_at desc);
 
-alter table treatment_templates enable row level security;
-
--- Read: everyone except receptionist.
-drop policy if exists "clinical read templates" on treatment_templates;
-create policy "clinical read templates" on treatment_templates for select using (
-  public.app_role() in ('admin','doctor','therapist')
-);
-drop policy if exists "doctor write templates" on treatment_templates;
-create policy "doctor write templates" on treatment_templates for insert with check (
-  public.app_role() in ('admin','doctor')
-);
-drop policy if exists "doctor update templates" on treatment_templates;
-create policy "doctor update templates" on treatment_templates for update using (
-  public.app_role() in ('admin','doctor')
-) with check (
-  public.app_role() in ('admin','doctor')
-);
-drop policy if exists "doctor delete templates" on treatment_templates;
-create policy "doctor delete templates" on treatment_templates for delete using (
-  public.app_role() in ('admin','doctor')
-);
-
--- ── Version history (snapshot per edit) ──────────────────────
-create table if not exists template_versions (
-  version_id     text primary key,
-  template_id    text not null references treatment_templates(template_id) on delete cascade,
-  version_num    int  not null,
-  editor_uid     uuid,
-  editor_name    text,
-  change_summary text,
-  snapshot       jsonb not null,
-  created_at     timestamptz default now()
-);
-create index if not exists tx_ver_template_idx on template_versions(template_id, version_num desc);
-
-alter table template_versions enable row level security;
-drop policy if exists "clinical read versions" on template_versions;
-create policy "clinical read versions" on template_versions for select using (
-  public.app_role() in ('admin','doctor','therapist')
-);
--- Only RPCs (security definer) write to versions — no direct policy.
-
--- ── Usage log (which patients used which template) ───────────
-create table if not exists template_usage (
-  use_id          text primary key,
-  template_id     text not null references treatment_templates(template_id) on delete cascade,
-  patient_id      text,
-  plan_id         text,
-  applied_by      uuid,
-  applied_by_name text,
-  applied_at      timestamptz default now(),
-  completed_at    timestamptz,
-  recovery_days   int
-);
-create index if not exists tx_use_template_idx on template_usage(template_id);
-create index if not exists tx_use_patient_idx  on template_usage(patient_id);
-
-alter table template_usage enable row level security;
-drop policy if exists "clinical read usage" on template_usage;
-create policy "clinical read usage" on template_usage for select using (
-  public.app_role() in ('admin','doctor','therapist')
-);
--- Writes go through RPCs.
-
--- ── Helper: audit + version ──────────────────────────────────
-create or replace function public._tpl_snapshot(p_template_id text) returns jsonb
-language sql stable security definer set search_path = public as $$
-  select to_jsonb(t.*) from treatment_templates t where t.template_id = p_template_id
-$$;
-
-create or replace function public._tpl_write_version(
-  p_template_id text, p_editor_uid uuid, p_editor_name text, p_summary text
-) returns void language plpgsql security definer set search_path = public as $$
-declare
-  v_num int;
-  v_id  text;
-  v_snap jsonb;
-begin
-  select coalesce(max(version_num),0) + 1 into v_num
-    from template_versions where template_id = p_template_id;
-  v_id := 'TV-' || p_template_id || '-' || v_num;
-  v_snap := public._tpl_snapshot(p_template_id);
-  insert into template_versions(version_id, template_id, version_num, editor_uid, editor_name, change_summary, snapshot)
-  values (v_id, p_template_id, v_num, p_editor_uid, p_editor_name, p_summary, v_snap);
-  update treatment_templates set version = v_num where template_id = p_template_id;
-end;
-$$;
-
--- ── RPC: create template ─────────────────────────────────────
-create or replace function public.create_treatment_template(
-  p_template_id text,
-  p_payload     jsonb
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role  text := public.app_role();
-  v_uid   uuid := auth.uid();
-  v_name  text := coalesce((p_payload->>'created_by_name'),'');
-  v_new_id text := p_template_id;
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح — الإنشاء مقتصر على المدير والطبيب';
-  end if;
-  if coalesce(btrim(p_payload->>'name'),'') = '' then
-    raise exception 'اسم القالب مطلوب';
-  end if;
-  if v_new_id is null or v_new_id = '' then
-    v_new_id := 'TPL-' || to_char(now(),'YYYYMMDD-HH24MISS') || '-'
-             || upper(substr(md5(random()::text),1,4));
-  end if;
-
-  insert into treatment_templates (
-    template_id, name, category, diagnosis, body_part,
-    goals, exercises, methods,
-    home_instructions, notes, warnings, followup_instructions,
-    estimated_sessions, weekly_frequency, expected_recovery_days,
-    status, version, created_by, created_by_name, updated_by, updated_by_name
-  ) values (
-    v_new_id,
-    btrim(p_payload->>'name'),
-    nullif(p_payload->>'category',''),
-    nullif(p_payload->>'diagnosis',''),
-    nullif(p_payload->>'body_part',''),
-    coalesce(p_payload->'goals','[]'::jsonb),
-    coalesce(p_payload->'exercises','[]'::jsonb),
-    coalesce(p_payload->'methods','[]'::jsonb),
-    nullif(p_payload->>'home_instructions',''),
-    nullif(p_payload->>'notes',''),
-    nullif(p_payload->>'warnings',''),
-    nullif(p_payload->>'followup_instructions',''),
-    nullif(p_payload->>'estimated_sessions','')::int,
-    nullif(p_payload->>'weekly_frequency','')::int,
-    nullif(p_payload->>'expected_recovery_days','')::int,
-    'active', 1, v_uid, v_name, v_uid, v_name
-  );
-
-  perform public._tpl_write_version(v_new_id, v_uid, v_name, 'إنشاء');
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, 'template_create', 'treatment_templates', v_new_id, p_payload);
-
-  return jsonb_build_object('template_id', v_new_id);
-end;
-$$;
-grant execute on function public.create_treatment_template(text, jsonb) to authenticated;
-
--- ── RPC: update template ─────────────────────────────────────
-create or replace function public.update_treatment_template(
-  p_template_id   text,
-  p_payload       jsonb,
-  p_change_summary text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role text := public.app_role();
-  v_uid  uuid := auth.uid();
-  v_name text := coalesce((p_payload->>'updated_by_name'),'');
-  v_old  jsonb;
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح — التعديل مقتصر على المدير والطبيب';
-  end if;
-  v_old := public._tpl_snapshot(p_template_id);
-  if v_old is null then raise exception 'القالب غير موجود'; end if;
-
-  update treatment_templates set
-    name                   = coalesce(nullif(btrim(p_payload->>'name'),''), name),
-    category               = coalesce(nullif(p_payload->>'category',''), category),
-    diagnosis              = coalesce(nullif(p_payload->>'diagnosis',''), diagnosis),
-    body_part              = coalesce(nullif(p_payload->>'body_part',''), body_part),
-    goals                  = coalesce(p_payload->'goals', goals),
-    exercises              = coalesce(p_payload->'exercises', exercises),
-    methods                = coalesce(p_payload->'methods', methods),
-    home_instructions      = coalesce(nullif(p_payload->>'home_instructions',''), home_instructions),
-    notes                  = coalesce(nullif(p_payload->>'notes',''), notes),
-    warnings               = coalesce(nullif(p_payload->>'warnings',''), warnings),
-    followup_instructions  = coalesce(nullif(p_payload->>'followup_instructions',''), followup_instructions),
-    estimated_sessions     = coalesce(nullif(p_payload->>'estimated_sessions','')::int, estimated_sessions),
-    weekly_frequency       = coalesce(nullif(p_payload->>'weekly_frequency','')::int, weekly_frequency),
-    expected_recovery_days = coalesce(nullif(p_payload->>'expected_recovery_days','')::int, expected_recovery_days),
-    updated_by             = v_uid,
-    updated_by_name        = v_name,
-    updated_at             = now()
-    where template_id = p_template_id;
-
-  perform public._tpl_write_version(p_template_id, v_uid, v_name, coalesce(p_change_summary,'تعديل'));
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, 'template_update', 'treatment_templates', p_template_id,
-    jsonb_build_object('old', v_old, 'new', p_payload, 'summary', p_change_summary));
-
-  return jsonb_build_object('template_id', p_template_id);
-end;
-$$;
-grant execute on function public.update_treatment_template(text, jsonb, text) to authenticated;
-
--- ── RPC: duplicate template ──────────────────────────────────
-create or replace function public.duplicate_treatment_template(
-  p_template_id text,
-  p_new_name    text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role  text := public.app_role();
-  v_uid   uuid := auth.uid();
-  v_src   treatment_templates%rowtype;
-  v_new_id text;
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح — النسخ مقتصر على المدير والطبيب';
-  end if;
-  select * into v_src from treatment_templates where template_id = p_template_id;
-  if not found then raise exception 'القالب غير موجود'; end if;
-
-  v_new_id := 'TPL-' || to_char(now(),'YYYYMMDD-HH24MISS') || '-'
-           || upper(substr(md5(random()::text),1,4));
-
-  insert into treatment_templates (
-    template_id, name, category, diagnosis, body_part,
-    goals, exercises, methods,
-    home_instructions, notes, warnings, followup_instructions,
-    estimated_sessions, weekly_frequency, expected_recovery_days,
-    status, version, created_by, created_by_name, updated_by, updated_by_name
-  ) values (
-    v_new_id,
-    coalesce(nullif(btrim(p_new_name),''), v_src.name || ' — نسخة'),
-    v_src.category, v_src.diagnosis, v_src.body_part,
-    v_src.goals, v_src.exercises, v_src.methods,
-    v_src.home_instructions, v_src.notes, v_src.warnings, v_src.followup_instructions,
-    v_src.estimated_sessions, v_src.weekly_frequency, v_src.expected_recovery_days,
-    'active', 1, v_uid,
-    coalesce((select raw_user_meta_data->>'name' from auth.users where id = v_uid),'—'),
-    v_uid,
-    coalesce((select raw_user_meta_data->>'name' from auth.users where id = v_uid),'—')
-  );
-
-  perform public._tpl_write_version(v_new_id, v_uid, null, 'نسخة من ' || p_template_id);
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, 'template_duplicate', 'treatment_templates', v_new_id,
-    jsonb_build_object('source_id', p_template_id));
-
-  return jsonb_build_object('template_id', v_new_id, 'source_id', p_template_id);
-end;
-$$;
-grant execute on function public.duplicate_treatment_template(text, text) to authenticated;
-
--- ── RPC: archive / restore ───────────────────────────────────
-create or replace function public.set_treatment_template_status(
-  p_template_id text,
-  p_status      text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role text := public.app_role();
-  v_uid  uuid := auth.uid();
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح';
-  end if;
-  if p_status not in ('active','archived') then
-    raise exception 'حالة غير صحيحة';
-  end if;
-  update treatment_templates set status = p_status, updated_at = now(), updated_by = v_uid
-    where template_id = p_template_id;
-  if not found then raise exception 'القالب غير موجود'; end if;
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role,
-    case when p_status='archived' then 'template_archive' else 'template_restore' end,
-    'treatment_templates', p_template_id, jsonb_build_object('status', p_status));
-
-  return jsonb_build_object('template_id', p_template_id, 'status', p_status);
-end;
-$$;
-grant execute on function public.set_treatment_template_status(text, text) to authenticated;
-
--- ── RPC: delete template (hard-delete only if never used) ────
-create or replace function public.delete_treatment_template(
-  p_template_id text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role text := public.app_role();
-  v_uid  uuid := auth.uid();
-  v_uses int;
-  v_row  treatment_templates%rowtype;
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح';
-  end if;
-  select * into v_row from treatment_templates where template_id = p_template_id;
-  if not found then raise exception 'القالب غير موجود'; end if;
-
-  select count(*)::int into v_uses from template_usage where template_id = p_template_id;
-  if v_uses > 0 or coalesce(v_row.usage_count,0) > 0 then
-    raise exception 'لا يمكن حذف قالب مستخدم — استخدم الأرشفة بدلاً منه';
-  end if;
-
-  delete from treatment_templates where template_id = p_template_id;
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, 'template_delete', 'treatment_templates', p_template_id,
-    to_jsonb(v_row));
-
-  return jsonb_build_object('template_id', p_template_id, 'deleted', true);
-end;
-$$;
-grant execute on function public.delete_treatment_template(text) to authenticated;
-
--- ── RPC: apply template to a patient ─────────────────────────
-create or replace function public.apply_template_to_patient(
-  p_template_id text,
-  p_patient_id  text,
-  p_plan_id     text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role text := public.app_role();
-  v_uid  uuid := auth.uid();
-  v_name text := coalesce((select raw_user_meta_data->>'name' from auth.users where id = v_uid),'—');
-  v_use_id text;
-  v_status text;
-begin
-  if v_role not in ('admin','doctor','therapist') then
-    raise exception 'غير مصرح';
-  end if;
-  select status into v_status from treatment_templates where template_id = p_template_id;
-  if v_status is null then raise exception 'القالب غير موجود'; end if;
-  if v_status = 'archived' then
-    raise exception 'لا يمكن تطبيق قالب مؤرشف';
-  end if;
-
-  v_use_id := 'TU-' || to_char(now(),'YYYYMMDD-HH24MISS') || '-'
-           || upper(substr(md5(random()::text),1,4));
-  insert into template_usage (use_id, template_id, patient_id, plan_id, applied_by, applied_by_name)
-  values (v_use_id, p_template_id, p_patient_id, p_plan_id, v_uid, v_name);
-
-  update treatment_templates
-     set usage_count  = coalesce(usage_count,0) + 1,
-         last_used_at = now()
-   where template_id = p_template_id;
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, 'template_apply', 'treatment_templates', p_template_id,
-    jsonb_build_object('patient_id', p_patient_id, 'plan_id', p_plan_id, 'use_id', v_use_id));
-
-  return jsonb_build_object('use_id', v_use_id, 'template_id', p_template_id);
-end;
-$$;
-grant execute on function public.apply_template_to_patient(text, text, text) to authenticated;
-
--- ── RPC: list templates with search + filters + pagination ───
-create or replace function public.list_treatment_templates(
-  p_status     text  default null,
-  p_category   text  default null,
-  p_creator    uuid  default null,
-  p_search     text  default null,
-  p_sort       text  default 'recent',
-  p_limit      int   default 100,
-  p_offset     int   default 0
-) returns jsonb
-language plpgsql security definer set search_path = public stable as $$
-declare
-  v_lim int := least(greatest(coalesce(p_limit,100),1),500);
-  v_off int := greatest(coalesce(p_offset,0),0);
-  v_srch text := nullif(btrim(coalesce(p_search,'')),'');
-  v_st   text := nullif(btrim(coalesce(p_status,'')),'');
-  v_cat  text := nullif(btrim(coalesce(p_category,'')),'');
-  v_rows jsonb;
-  v_cnt  int;
-begin
-  if public.app_role() not in ('admin','doctor','therapist') then
-    raise exception 'غير مصرح';
-  end if;
-
-  with base as (
-    select t.*
-      from treatment_templates t
-     where (v_st  is null or t.status   = v_st)
-       and (v_cat is null or t.category = v_cat)
-       and (p_creator is null or t.created_by = p_creator)
-       and (
-         v_srch is null
-         or t.name      ilike '%'||v_srch||'%'
-         or t.diagnosis ilike '%'||v_srch||'%'
-         or t.category  ilike '%'||v_srch||'%'
-         or t.body_part ilike '%'||v_srch||'%'
-         or (t.exercises::text ilike '%'||v_srch||'%')
-         or (t.methods  ::text ilike '%'||v_srch||'%')
-       )
-  ),
-  ordered as (
-    select * from base
-    order by
-      case when p_sort = 'usage'   then usage_count end desc nulls last,
-      case when p_sort = 'name'    then name       end asc  nulls last,
-      case when p_sort = 'oldest'  then created_at end asc  nulls last,
-      created_at desc
-    limit v_lim offset v_off
-  )
-  select coalesce(jsonb_agg(to_jsonb(ordered.*)),'[]'::jsonb),
-         (select count(*)::int from base)
-    into v_rows, v_cnt
-    from ordered;
-
-  return jsonb_build_object('rows', v_rows, 'count', v_cnt,
-                             'limit', v_lim, 'offset', v_off);
-end;
-$$;
-grant execute on function public.list_treatment_templates(text,text,uuid,text,text,int,int) to authenticated;
-
--- ── RPC: fetch a single template + versions + usage stats ────
-create or replace function public.get_treatment_template(
-  p_template_id text
-) returns jsonb
-language plpgsql security definer set search_path = public stable as $$
-declare
-  v_tpl jsonb;
-  v_versions jsonb;
-  v_stats jsonb;
-begin
-  if public.app_role() not in ('admin','doctor','therapist') then
-    raise exception 'غير مصرح';
-  end if;
-  select to_jsonb(t.*) into v_tpl from treatment_templates t where t.template_id = p_template_id;
-  if v_tpl is null then return null; end if;
-
-  select coalesce(jsonb_agg(to_jsonb(v.*) order by v.version_num desc),'[]'::jsonb)
-    into v_versions
-    from template_versions v where v.template_id = p_template_id;
-
-  select jsonb_build_object(
-    'usage_count',    coalesce(count(*),0),
-    'completion_rate',coalesce(round(avg( (completed_at is not null)::int )::numeric * 100, 1), 0),
-    'avg_recovery',   coalesce(round(avg(recovery_days),1), 0),
-    'last_used_at',   max(applied_at)
-  ) into v_stats
-    from template_usage where template_id = p_template_id;
-
-  return jsonb_build_object('template', v_tpl, 'versions', v_versions, 'stats', v_stats);
-end;
-$$;
-grant execute on function public.get_treatment_template(text) to authenticated;
-
--- ── RPC: restore a previous version ──────────────────────────
-create or replace function public.restore_template_version(
-  p_version_id text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role text := public.app_role();
-  v_uid  uuid := auth.uid();
-  v_v    template_versions%rowtype;
-  v_snap jsonb;
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح';
-  end if;
-  select * into v_v from template_versions where version_id = p_version_id;
-  if not found then raise exception 'الإصدار غير موجود'; end if;
-  v_snap := v_v.snapshot;
-
-  update treatment_templates set
-    name                   = v_snap->>'name',
-    category               = v_snap->>'category',
-    diagnosis              = v_snap->>'diagnosis',
-    body_part              = v_snap->>'body_part',
-    goals                  = coalesce(v_snap->'goals','[]'::jsonb),
-    exercises              = coalesce(v_snap->'exercises','[]'::jsonb),
-    methods                = coalesce(v_snap->'methods','[]'::jsonb),
-    home_instructions      = v_snap->>'home_instructions',
-    notes                  = v_snap->>'notes',
-    warnings               = v_snap->>'warnings',
-    followup_instructions  = v_snap->>'followup_instructions',
-    estimated_sessions     = nullif(v_snap->>'estimated_sessions','')::int,
-    weekly_frequency       = nullif(v_snap->>'weekly_frequency','')::int,
-    expected_recovery_days = nullif(v_snap->>'expected_recovery_days','')::int,
-    updated_by             = v_uid,
-    updated_at             = now()
-    where template_id = v_v.template_id;
-
-  perform public._tpl_write_version(v_v.template_id, v_uid, null,
-    'استعادة الإصدار ' || v_v.version_num);
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, 'template_restore_version', 'treatment_templates', v_v.template_id,
-    jsonb_build_object('version_id', p_version_id, 'version_num', v_v.version_num));
-
-  return jsonb_build_object('template_id', v_v.template_id);
-end;
-$$;
-grant execute on function public.restore_template_version(text) to authenticated;
 
 
 -- ═════════════════════════════════════════════════════════════
@@ -2796,87 +2194,7 @@ grant execute on function public.restore_template_version(text) to authenticated
 -- methods used by any template. Existing v1 create/update RPCs
 -- stay intact so old callers still work.
 -- ═════════════════════════════════════════════════════════════
-alter table treatment_methods
-  add column if not exists icon           text,
-  add column if not exists color          text,
-  add column if not exists display_order  int;
 
-create index if not exists tx_methods_order_idx
-  on treatment_methods(display_order nulls last, name);
-
--- ── RPC: upsert (create or update) with full field set ───────
-create or replace function public.upsert_treatment_method(
-  p_method_id text,
-  p_payload   jsonb
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role   text := public.app_role();
-  v_uid    uuid := auth.uid();
-  v_name   text := btrim(coalesce(p_payload->>'name',''));
-  v_id     text := p_method_id;
-  v_old    treatment_methods%rowtype;
-  v_dup    int;
-  v_action text;
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح — لا تملك صلاحية إدارة طرق العلاج';
-  end if;
-  if v_name = '' then raise exception 'اسم طريقة العلاج مطلوب'; end if;
-
-  if v_id is null or v_id = '' then
-    v_id := 'TM-' || to_char(now(),'YYYYMMDD-HH24MISS') || '-'
-         || upper(substr(md5(random()::text),1,4));
-  end if;
-
-  select * into v_old from treatment_methods where method_id = v_id for update;
-  v_action := case when found then 'tx_method_update' else 'tx_method_create' end;
-
-  select count(*) into v_dup from treatment_methods
-    where lower(trim(name)) = lower(v_name) and method_id <> v_id;
-  if v_dup > 0 then raise exception 'اسم طريقة العلاج موجود مسبقًا'; end if;
-
-  if found then
-    update treatment_methods set
-      name             = v_name,
-      category         = nullif(btrim(coalesce(p_payload->>'category','')),''),
-      description      = nullif(btrim(coalesce(p_payload->>'description','')),''),
-      duration_minutes = nullif(p_payload->>'duration_minutes','')::int,
-      notes            = nullif(btrim(coalesce(p_payload->>'notes','')),''),
-      icon             = nullif(btrim(coalesce(p_payload->>'icon','')),''),
-      color            = nullif(btrim(coalesce(p_payload->>'color','')),''),
-      display_order    = nullif(p_payload->>'display_order','')::int,
-      status           = case when coalesce(p_payload->>'is_active','true')='false'
-                                then 'archived' else coalesce(status,'active') end,
-      updated_at       = now()
-      where method_id  = v_id;
-  else
-    insert into treatment_methods (
-      method_id, name, category, description, duration_minutes, notes,
-      icon, color, display_order, status, created_by, created_by_name
-    ) values (
-      v_id, v_name,
-      nullif(btrim(coalesce(p_payload->>'category','')),''),
-      nullif(btrim(coalesce(p_payload->>'description','')),''),
-      nullif(p_payload->>'duration_minutes','')::int,
-      nullif(btrim(coalesce(p_payload->>'notes','')),''),
-      nullif(btrim(coalesce(p_payload->>'icon','')),''),
-      nullif(btrim(coalesce(p_payload->>'color','')),''),
-      nullif(p_payload->>'display_order','')::int,
-      case when coalesce(p_payload->>'is_active','true')='false' then 'archived' else 'active' end,
-      v_uid,
-      (select name from staff where user_id = v_uid limit 1)
-    );
-  end if;
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role, v_action, 'treatment_methods', v_id,
-    jsonb_build_object('old', to_jsonb(v_old), 'new', p_payload));
-
-  return jsonb_build_object('method_id', v_id, 'name', v_name);
-end;
-$$;
-grant execute on function public.upsert_treatment_method(text, jsonb) to authenticated;
 
 -- ── RPC: hard delete (blocks if referenced by any template) ──
 -- Templates store methods as JSONB [{method_id, name}]. Block the
@@ -2916,7 +2234,6 @@ begin
   return jsonb_build_object('method_id', p_method_id, 'deleted', true);
 end;
 $$;
-grant execute on function public.delete_treatment_method(text) to authenticated;
 
 
 -- ═════════════════════════════════════════════════════════════
@@ -2926,51 +2243,7 @@ grant execute on function public.delete_treatment_method(text) to authenticated;
 -- category even after a category is archived or renamed; the
 -- categories table is the *authoritative source* for the picker.
 -- ═════════════════════════════════════════════════════════════
-create table if not exists template_categories (
-  category_id     text primary key,
-  name            text not null,
-  description     text,
-  status          text not null default 'active'
-                    check (status in ('active','archived')),
-  sort_order      int,
-  created_by      uuid,
-  created_by_name text,
-  created_at      timestamptz default now(),
-  updated_at      timestamptz default now()
-);
-create unique index if not exists tpl_cat_name_uniq
-  on template_categories(lower(trim(name)));
-create index if not exists tpl_cat_status_idx  on template_categories(status);
-create index if not exists tpl_cat_sort_idx    on template_categories(sort_order nulls last, name);
 
-alter table template_categories enable row level security;
-
-drop policy if exists "clinical read tpl categories" on template_categories;
-create policy "clinical read tpl categories" on template_categories for select using (
-  public.app_role() in ('admin','doctor','therapist')
-);
--- Writes go through the RPCs below (security definer).
-
--- ── RPC: list categories ─────────────────────────────────────
-create or replace function public.list_template_categories(
-  p_include_archived boolean default false
-) returns jsonb
-language plpgsql security definer set search_path = public stable as $$
-declare
-  v_rows jsonb;
-begin
-  if public.app_role() not in ('admin','doctor','therapist') then
-    raise exception 'غير مصرح';
-  end if;
-  select coalesce(jsonb_agg(to_jsonb(c.*) order by
-    coalesce(c.sort_order, 999999), c.name),'[]'::jsonb)
-    into v_rows
-    from template_categories c
-   where p_include_archived or c.status = 'active';
-  return jsonb_build_object('rows', v_rows);
-end;
-$$;
-grant execute on function public.list_template_categories(boolean) to authenticated;
 
 -- ── RPC: upsert (create or rename/reorder) category ──────────
 create or replace function public.upsert_template_category(
@@ -3037,37 +2310,6 @@ begin
   return jsonb_build_object('category_id', v_id, 'name', v_name);
 end;
 $$;
-grant execute on function public.upsert_template_category(text, jsonb) to authenticated;
-
--- ── RPC: archive / restore category ──────────────────────────
-create or replace function public.set_template_category_status(
-  p_category_id text,
-  p_status      text
-) returns jsonb
-language plpgsql security definer set search_path = public as $$
-declare
-  v_role text := public.app_role();
-  v_uid  uuid := auth.uid();
-begin
-  if v_role not in ('admin','doctor') then
-    raise exception 'غير مصرح';
-  end if;
-  if p_status not in ('active','archived') then
-    raise exception 'حالة غير صحيحة';
-  end if;
-  update template_categories set status = p_status, updated_at = now()
-    where category_id = p_category_id;
-  if not found then raise exception 'الفئة غير موجودة'; end if;
-
-  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
-  values (v_uid, v_role,
-    case when p_status='archived' then 'tpl_cat_archive' else 'tpl_cat_restore' end,
-    'template_categories', p_category_id, jsonb_build_object('status', p_status));
-
-  return jsonb_build_object('category_id', p_category_id, 'status', p_status);
-end;
-$$;
-grant execute on function public.set_template_category_status(text, text) to authenticated;
 
 -- ┌────────────────────────────────────────────────────────────────────┐
 -- │ 3. MIGRATION — extended patient fields + unique indexes
@@ -3144,7 +2386,6 @@ alter table patient_files add column if not exists storage_path      text;
 alter table patient_files add column if not exists original_name     text;
 alter table patient_files add column if not exists mime_type         text;
 alter table patient_files add column if not exists file_size         bigint;
-alter table patient_files add column if not exists uploaded_by       uuid;
 alter table patient_files add column if not exists uploaded_by_name  text;
 
 -- Backfill mime_type from legacy file_type column where empty.
@@ -3269,21 +2510,6 @@ alter table clinic_settings add column if not exists currency              text 
 alter table clinic_settings add column if not exists timezone              text default 'Africa/Cairo';
 alter table clinic_settings add column if not exists appointment_duration  int  default 30;
 
--- Make sure the singleton row actually exists before the first save.
-insert into clinic_settings (id) values (1) on conflict do nothing;
-
--- Refresh RLS: admins get SELECT + INSERT + UPDATE. Read stays public so
--- the login page can pull branding before an auth session exists.
-drop policy if exists "public read clinic_settings" on clinic_settings;
-create policy "public read clinic_settings"
-  on clinic_settings for select using (true);
-
-drop policy if exists "admin write clinic_settings" on clinic_settings;
-create policy "admin write clinic_settings"
-  on clinic_settings for all
-  using      (public.app_role() = 'admin')
-  with check (public.app_role() = 'admin');
-
 -- ── staff: provenance columns the PRD requires ──
 alter table staff add column if not exists status      text default 'active';
 alter table staff add column if not exists created_by  uuid;
@@ -3348,100 +2574,6 @@ from auth.users u
 where u.raw_user_meta_data->>'role' in ('admin','receptionist','doctor','therapist')
   and not exists (select 1 from staff s where s.auth_uid = u.id)
 on conflict (staff_id) do nothing;
-
--- ── 2. app_role(): read the role from PostgreSQL, not the JWT ─
--- SECURITY DEFINER so the lookup is not blocked by staff's own RLS and
--- cannot recurse into it. Anonymous requests have auth.uid() = null →
--- role = null → every staff policy evaluates to false, so anon can never
--- read or write patient data.
-create or replace function public.app_role() returns text
-language plpgsql stable security definer
-set search_path = public
-as $$
-begin
-  return (select s.role from staff s where s.auth_uid = auth.uid() limit 1);
-end $$;
-
--- ── 3. patients: every staff role may INSERT + UPDATE ────────
--- Replaces the single FOR ALL admin/reception policy with per-command
--- policies. SELECT stays as-is ("staff read patients" already covers all
--- four roles). DELETE remains admin/reception only.
-drop policy if exists "admin/reception write patients" on patients;
-
-drop policy if exists "staff insert patients" on patients;
-create policy "staff insert patients" on patients for insert with check (
-  public.app_role() in ('admin','receptionist','doctor','therapist')
-);
-
-drop policy if exists "staff update patients" on patients;
-create policy "staff update patients" on patients for update using (
-  public.app_role() in ('admin','receptionist','doctor','therapist')
-) with check (
-  public.app_role() in ('admin','receptionist','doctor','therapist')
-);
-
-drop policy if exists "admin/reception delete patients" on patients;
-create policy "admin/reception delete patients" on patients for delete using (
-  public.app_role() in ('admin','receptionist')
-);
-
--- ── 4. patient_files: every staff role may attach documents ──
--- uploaded_by may not exist yet if supabase-migration-files-2026-07-12.sql
--- hasn't run; make this migration self-contained.
-alter table patient_files add column if not exists uploaded_by uuid;
-
-drop policy if exists "admin/reception write patient_files" on patient_files;
-
-drop policy if exists "staff insert patient_files" on patient_files;
-create policy "staff insert patient_files" on patient_files for insert with check (
-  public.app_role() in ('admin','receptionist','doctor','therapist')
-);
-
-drop policy if exists "admin/reception update patient_files" on patient_files;
-create policy "admin/reception update patient_files" on patient_files for update using (
-  public.app_role() in ('admin','receptionist')
-) with check (
-  public.app_role() in ('admin','receptionist')
-);
-
--- Uploaders may delete their own rows (needed for the client's
--- compensating rollback when a storage upload succeeds but the metadata
--- insert fails); admin/reception may delete any.
-drop policy if exists "staff delete patient_files" on patient_files;
-create policy "staff delete patient_files" on patient_files for delete using (
-  public.app_role() in ('admin','receptionist')
-  or uploaded_by = auth.uid()
-);
-
--- ── 5. Storage bucket: every staff role may upload ───────────
-drop policy if exists "admin/reception write patient files bucket" on storage.objects;
-
-drop policy if exists "staff upload patient files bucket" on storage.objects;
-create policy "staff upload patient files bucket" on storage.objects for insert with check (
-  bucket_id = 'patient-files'
-  and public.app_role() in ('admin','receptionist','doctor','therapist')
-);
-
-drop policy if exists "admin/reception update patient files bucket" on storage.objects;
-create policy "admin/reception update patient files bucket" on storage.objects for update using (
-  bucket_id = 'patient-files'
-  and public.app_role() in ('admin','receptionist')
-) with check (
-  bucket_id = 'patient-files'
-  and public.app_role() in ('admin','receptionist')
-);
-
--- Uploaders may remove their own objects (upload rollback); storage sets
--- owner/owner_id to auth.uid() on upload.
-drop policy if exists "staff delete patient files bucket" on storage.objects;
-create policy "staff delete patient files bucket" on storage.objects for delete using (
-  bucket_id = 'patient-files'
-  and (
-    public.app_role() in ('admin','receptionist')
-    or owner = auth.uid()
-    or owner_id = auth.uid()::text
-  )
-);
 
 -- ── 6. Belt-and-braces table grants ──────────────────────────
 -- Supabase grants these by default; restated so a hardened project that
@@ -3829,7 +2961,6 @@ grant execute on function public.get_treatment(text) to authenticated;
 -- bookings.therapist_id  → required assignment (enforced by the app)
 -- bookings.doctor_id     → optional, set only on explicit selection
 create index if not exists bookings_status_idx    on bookings(status);
-create index if not exists bookings_date_idx      on bookings(date);
 create index if not exists bookings_therapist_idx on bookings(therapist_id);
 create index if not exists bookings_doctor_idx    on bookings(doctor_id);
 
@@ -3870,6 +3001,10 @@ create policy "staff write schedules" on patient_schedules for all using (
 -- cancel/reschedule own sessions and to generate appointments from the
 -- recurring schedule). Matches the sessions-table precedent; the
 -- therapist can be linked either through staff.staff_id or therapists.id.
+-- Older deployments predate the therapists.auth_uid link, so add it here.
+alter table if exists therapists add column if not exists auth_uid uuid;
+create index if not exists therapists_auth_uid_idx on therapists(auth_uid);
+
 drop policy if exists "therapist writes own bookings" on bookings;
 create policy "therapist writes own bookings" on bookings for all using (
   public.app_role() = 'therapist' and (
@@ -3910,8 +3045,6 @@ alter table therapists add column if not exists notes          text;
 alter table therapists add column if not exists active         boolean default true;
 alter table therapists add column if not exists auth_uid       uuid;   -- links to auth.users.id
 alter table therapists add column if not exists updated_at     timestamptz default now();
--- Used by RLS policies that resolve the logged-in therapist by account.
-create index if not exists therapists_auth_uid_idx on therapists(auth_uid);
 
 -- ── doctors: roster/profile fields ─────────────────────────────
 alter table doctors add column if not exists phone          text;
@@ -3951,9 +3084,6 @@ create policy "admin write receptionists" on receptionists for all using (
   public.app_role() = 'admin'
 );
 
--- Ask PostgREST to refresh its schema cache immediately so the new
--- columns are usable without waiting for the automatic reload.
-notify pgrst, 'reload schema';
 
 -- ┌────────────────────────────────────────────────────────────────────┐
 -- │ 10. MIGRATION — drop the removed `modalities` column from
@@ -4002,11 +3132,96 @@ alter table if exists treatments           drop column if exists modalities;
 alter table clinic_settings add column if not exists calendar_start text default '08:00';
 alter table clinic_settings add column if not exists calendar_end   text default '18:00';
 
--- Ask PostgREST to refresh its schema cache immediately.
-notify pgrst, 'reload schema';
+-- ┌────────────────────────────────────────────────────────────────────┐
+-- │ 12. MIGRATION — treatment sessions ↔ treatment plans linkage,
+-- │     session counters, packages column repair
+-- │ (source: supabase-migration-sessions-plan-2026-07-13.sql)
+-- └────────────────────────────────────────────────────────────────────┘
+
+-- ═══════════════════════════════════════════════════════════════
+-- Migration: link treatment sessions to treatment plans (2026-07-13)
+--
+-- Every treatment session (جلسة علاج) is generated from the patient's
+-- active treatment plan (خطة العلاج):
+--   • sessions.treatment_id  → the plan the session belongs to
+--   • sessions.booking_id    → the appointment the session ran under
+--   • per-session clinical payload: goals checked off, exercises
+--     completed, mood, duration
+--   • treatments.completed_sessions is maintained by a trigger — every
+--     logged session updates the plan's completed/remaining counts
+--     automatically, no manual bookkeeping.
+-- Idempotent — safe to re-run.
+-- ═══════════════════════════════════════════════════════════════
+
+-- ── sessions: plan/appointment linkage + clinical payload ─────
+alter table sessions add column if not exists treatment_id        text references treatments(treatment_id) on delete set null;
+alter table sessions add column if not exists booking_id          text references bookings(booking_id) on delete set null;
+alter table sessions add column if not exists goals               jsonb default '[]'::jsonb;
+alter table sessions add column if not exists completed_exercises jsonb default '[]'::jsonb;
+alter table sessions add column if not exists mood                int;
+alter table sessions add column if not exists duration_minutes    int;
+
+create index if not exists sessions_treatment_idx on sessions(treatment_id);
+create index if not exists sessions_booking_idx   on sessions(booking_id);
+create index if not exists sessions_patient_idx   on sessions(patient_id);
+
+-- ── treatments: session counters ──────────────────────────────
+-- estimated_sessions (already present) = total planned sessions.
+-- completed_sessions = trigger-maintained count of logged sessions.
+-- remaining = estimated_sessions - completed_sessions (computed in views/UI).
+alter table treatments add column if not exists completed_sessions int default 0;
+
+-- Recompute-based sync: correct under insert, delete, and re-linking a
+-- session to a different plan; safe against replays.
+create or replace function public.sync_treatment_session_count()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_ids text[];
+begin
+  v_ids := array_remove(array[
+    case when tg_op in ('INSERT','UPDATE') then new.treatment_id end,
+    case when tg_op in ('DELETE','UPDATE') then old.treatment_id end
+  ], null);
+  update treatments t
+     set completed_sessions = (
+           select count(*) from sessions s where s.treatment_id = t.treatment_id
+         ),
+         updated_at = now()
+   where t.treatment_id = any(v_ids);
+  return null;
+end;
+$$;
+
+drop trigger if exists sessions_sync_treatment_count on sessions;
+create trigger sessions_sync_treatment_count
+  after insert or update of treatment_id or delete on sessions
+  for each row execute function public.sync_treatment_session_count();
+
+-- Backfill for databases that already have linked sessions (no-op when
+-- treatment_id was just added).
+update treatments t
+   set completed_sessions = coalesce(
+         (select count(*) from sessions s where s.treatment_id = t.treatment_id), 0);
+
+-- ── packages: repair the FK-stub trap ─────────────────────────
+-- The consolidated schema declared an id/name-only `packages` stub early
+-- (so patient_subscriptions' FK resolves) and the full definition later —
+-- but `create table if not exists` makes the later, full definition a
+-- no-op, so databases created from scratch were missing these columns.
+alter table packages add column if not exists sessions   int default 1;
+alter table packages add column if not exists price      numeric default 0;
+alter table packages add column if not exists active     boolean default true;
+alter table packages add column if not exists popular    boolean default false;
+alter table packages add column if not exists color      text default '#7BBDE8';
+alter table packages add column if not exists sold       int default 0;
+alter table packages add column if not exists created_at timestamptz default now();
 
 -- ┌────────────────────────────────────────────────────────────────────┐
--- │ 12. SEED — main admin account (skipped if it already exists)
+-- │ 13. SEED — main admin account (skipped if it already exists)
 -- │ (source: seed-admin.sql)
 -- └────────────────────────────────────────────────────────────────────┘
 
@@ -4113,7 +3328,7 @@ begin
 end $$;
 
 -- ┌────────────────────────────────────────────────────────────────────┐
--- │ 13. SEED — clinic staff: therapists + receptionist
+-- │ 14. SEED — clinic staff: therapists + receptionist
 -- │ (source: seed-staff.sql)
 -- └────────────────────────────────────────────────────────────────────┘
 
@@ -4149,7 +3364,6 @@ end $$;
 -- supabase-all-in-one.sql, which already includes this).
 -- ============================================================
 
-create extension if not exists pgcrypto;
 
 do $$
 declare
@@ -4249,3 +3463,6 @@ begin
     set name = excluded.name,
         spec = excluded.spec;
 end $$;
+
+-- Refresh the PostgREST schema cache once, after all DDL above.
+notify pgrst, 'reload schema';

@@ -1,7 +1,7 @@
 # Supabase — schema & migrations
 
 This folder holds the database schema as **versioned migrations** for the
-Supabase CLI. The repo-root `supabase-all-in-one.sql` carries the same content
+Supabase CLI. The repo-root `Supabase_All_In_One.sql` carries the same content
 (plus the seeds) as a single paste-friendly file for the Dashboard SQL editor —
 the two are kept in sync.
 
@@ -25,8 +25,12 @@ supabase/
     │                                        # doctors + therapists, and the
     │                                        # receptionists table (PGRST204 fix)
     ├── 20260713020000_drop_modalities.sql   # drop removed `modalities` column
-    └── 20260713030000_calendar_hours.sql    # configurable calendar working
-                                             # hours (calendar_start/_end)
+    ├── 20260713030000_calendar_hours.sql    # configurable calendar working
+    │                                        # hours (calendar_start/_end)
+    └── 20260713040000_sessions_plan_link.sql
+                                             # sessions ↔ treatment plans link,
+                                             # completed-session counters,
+                                             # packages column repair
 ```
 
 Every statement is **idempotent** (`create ... if not exists`,
@@ -55,7 +59,7 @@ Dashboard SQL editor.
 ### Option B — Dashboard (no CLI)
 
 1. Open your project → **SQL Editor**.
-2. Paste and run the root **`supabase-all-in-one.sql`** — it contains the full
+2. Paste and run the root **`Supabase_All_In_One.sql`** — it contains the full
    schema, every migration, and the seeds in dependency order.
 
 ## Adding future changes
@@ -68,7 +72,7 @@ supabase migration new add_something   # creates supabase/migrations/<ts>_add_so
 supabase db push
 ```
 
-Keep the root `supabase-all-in-one.sql` in sync (it's the consolidated file
+Keep the root `Supabase_All_In_One.sql` in sync (it's the consolidated file
 used by Dashboard users) by adding the same statements as a new numbered
 section before the seed sections.
 
