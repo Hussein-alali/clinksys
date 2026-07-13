@@ -116,6 +116,7 @@ create table if not exists therapists (
   "load"      int default 0,
   max         int default 8,
   color       text default '#7BBDE8',
+  auth_uid    uuid,                             -- links to auth.users.id (optional)
   created_at  timestamptz default now()
 );
 

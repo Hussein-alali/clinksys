@@ -209,6 +209,7 @@ create table if not exists therapists (
   "load"      int default 0,
   max         int default 8,
   color       text default '#7BBDE8',
+  auth_uid    uuid,                             -- links to auth.users.id (optional)
   created_at  timestamptz default now()
 );
 
@@ -4108,6 +4109,10 @@ create policy "staff write schedules" on patient_schedules for all using (
 -- cancel/reschedule own sessions and to generate appointments from the
 -- recurring schedule). Matches the sessions-table precedent; the
 -- therapist can be linked either through staff.staff_id or therapists.id.
+-- Older deployments predate the therapists.auth_uid link, so add it here.
+alter table if exists therapists add column if not exists auth_uid uuid;
+create index if not exists therapists_auth_uid_idx on therapists(auth_uid);
+
 drop policy if exists "therapist writes own bookings" on bookings;
 create policy "therapist writes own bookings" on bookings for all using (
   public.app_role() = 'therapist' and (
