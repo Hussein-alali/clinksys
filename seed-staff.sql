@@ -26,8 +26,8 @@
 --      appear in the "الأخصائي المسؤول" picker on treatment plans. The
 --      roster id equals the staff_id so every person has one canonical id.
 --
--- Idempotent: safe to re-run. Run AFTER supabase-schema.sql (or just run
--- supabase-all-in-one.sql, which already includes this).
+-- Idempotent: safe to re-run. Run AFTER the schema (or just run
+-- Supabase_All_In_One.sql, which already includes this).
 -- ============================================================
 
 create extension if not exists pgcrypto;

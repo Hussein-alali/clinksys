@@ -7,7 +7,7 @@ can run it with `npm start`.
 ## 1. Prepare Supabase (once)
 
 Open your Supabase project → **SQL Editor** → New query, paste the entire
-contents of **`supabase-all-in-one.sql`**, and Run. That single file
+contents of **`Supabase_All_In_One.sql`**, and Run. That single file
 contains the full schema, every migration, all RLS policies, the
 `patient-files` storage bucket, and the admin seed — in the right order,
 and safe to re-run on a fresh or existing database.
@@ -17,10 +17,10 @@ It creates the main admin account:
 - **Password:** `Amr@2026!` — **change it after first login**
   (Dashboard → Authentication → Users → Reset password).
 
-(The individual files — `supabase-schema.sql`, `seed-admin.sql`, and the
-`supabase-migration-*.sql` files — are the sources the all-in-one file is
-generated from; you only need them if you prefer applying changes
-piecemeal.)
+(`Supabase_All_In_One.sql` is the single consolidated master file — the
+versioned copies of each change live in `supabase/migrations/` for
+Supabase-CLI users, and `seed-admin.sql` / `seed-staff.sql` remain as
+standalone seed scripts.)
 
 The Supabase URL and anon key are set in `src/supabase.jsx` (overridable by
 defining `window.SUPABASE_URL` / `window.SUPABASE_ANON_KEY` in `index.html`
@@ -101,7 +101,7 @@ that to work, turn **"Confirm email" OFF** (Authentication → Sign In / Up
 ## Booking data (departments & doctors)
 
 The booking module reads **departments** and **doctors** from the database
-(tables created by `supabase-schema.sql`):
+(tables created by `Supabase_All_In_One.sql`):
 
 - Add a **department** row (`name_ar`, `icon`, `color`, `sort_order`,
   `active`) → it appears automatically on the booking page.
