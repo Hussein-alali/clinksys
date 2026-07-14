@@ -2721,12 +2721,37 @@ async function setTemplateCategoryStatus(category_id, status) {
   return { ok: true, category_id, status };
 }
 
+// Hard-delete a category. Blocked server-side (and in the LS mirror) when
+// any template still references its name, so no template is orphaned.
+async function deleteTemplateCategory(category_id) {
+  if (!category_id) return { ok: false, error: 'معرّف مفقود' };
+  if (sb) {
+    const { data, error } = await sb.rpc('delete_template_category', {
+      p_category_id: category_id,
+    });
+    if (error) return { ok: false, error: error.message || 'تعذّر الحذف' };
+    __tplCatDispatch();
+    return { ok: true, category_id: data && data.category_id };
+  }
+  // LS fallback: refuse when a mirrored template uses this category's name.
+  const rows = readLS(LS_TPL_CATEGORIES, []);
+  const cat = rows.find(r => r.category_id === category_id);
+  if (!cat) return { ok: false, error: 'الفئة غير موجودة' };
+  const tpls = readLS(LS_TEMPLATES, []);
+  const used = tpls.filter(t => t.category === cat.name).length;
+  if (used > 0) return { ok: false, error: `لا يمكن حذف الفئة — يستخدمها ${used} قالب. أعد تصنيف القوالب أو أرشِف الفئة بدلًا من حذفها.` };
+  writeLS(LS_TPL_CATEGORIES, rows.filter(r => r.category_id !== category_id));
+  __tplCatDispatch();
+  return { ok: true, category_id };
+}
+
 const TplCategories = {
   list:    listTemplateCategories,
   create:  (payload) => upsertTemplateCategory(null, payload),
   update:  upsertTemplateCategory,
   archive: (id) => setTemplateCategoryStatus(id, 'archived'),
   restore: (id) => setTemplateCategoryStatus(id, 'active'),
+  remove:  deleteTemplateCategory,
 };
 window.TplCategories = TplCategories;
 

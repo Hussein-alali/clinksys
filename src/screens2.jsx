@@ -490,7 +490,7 @@ function TreatmentPlanCreate({ onCancel, onSave, template }) {
             <Field label="اسم الخطة" span={2}>
               <input className="input" value={tplName} onChange={e=>setTplName(e.target.value)} placeholder="اسم القالب أو التشخيص"/>
             </Field>
-            <Field label="الفئة"><input className="input" value={category} onChange={e=>setCategory(e.target.value)}/></Field>
+            <Field label="الفئة"><CategoryCombobox value={category} onChange={setCategory}/></Field>
             <Field label="الجزء المستهدف"><input className="input" value={bodyPart} onChange={e=>setBodyPart(e.target.value)}/></Field>
             <Field label="التشخيص" required span={2}><input className="input" value={diag} onChange={e=>setDiag(e.target.value)}/></Field>
             <Field label="الأهداف (هدف بكل سطر)" span={2}><textarea className="input" style={{height:100,padding:10}} value={goalsText} onChange={e=>setGoalsText(e.target.value)}/></Field>
@@ -6933,7 +6933,7 @@ function TemplateEditorModal({ templateId, onClose, onSaved }) {
               <input className="input" value={state.name} onChange={e=>up('name',e.target.value)}/>
             </Field>
             <Field label="الفئة">
-              <input className="input" value={state.category} onChange={e=>up('category',e.target.value)} placeholder="مثال: تأهيل الركبة"/>
+              <CategoryCombobox value={state.category} onChange={v=>up('category',v)}/>
             </Field>
             <Field label="التشخيص">
               <input className="input" value={state.diagnosis} onChange={e=>up('diagnosis',e.target.value)}/>
@@ -7508,6 +7508,18 @@ function TemplateCategoriesModal({ cats, perms, onClose }) {
       : (res.error || 'تعذّر التنفيذ'),
       res.ok ? 'success' : 'error');
   }
+  const [deletingId, setDeletingId] = React.useState(null);   // two-step delete confirm
+  async function doDelete(c) {
+    const res = await window.TplCategories.remove(c.category_id);
+    if (res.ok) {
+      if (window.showToast) window.showToast('تم حذف الفئة', 'success');
+      if (editingId === c.category_id) resetForm();
+    } else if (window.showToast) {
+      // Usually "in use" — surface the server's explanation verbatim.
+      window.showToast(res.error || 'تعذّر الحذف', 'error');
+    }
+    setDeletingId(null);
+  }
 
   const visible = showArchived ? cats : cats.filter(c => c.status !== 'archived');
 
@@ -7536,6 +7548,14 @@ function TemplateCategoriesModal({ cats, perms, onClose }) {
                     <button className="btn btn-ghost" style={{fontSize:11.5,padding:'4px 8px',color: archived ? 'var(--green)' : 'var(--amber-700, #b45309)'}} onClick={()=>doArchiveToggle(c)}>
                       {archived ? 'استعادة' : 'أرشفة'}
                     </button>
+                    {deletingId === c.category_id ? (
+                      <>
+                        <button className="btn btn-ghost" style={{fontSize:11.5,padding:'4px 8px',color:'var(--red)',fontWeight:600}} onClick={()=>doDelete(c)}>تأكيد</button>
+                        <button className="btn btn-ghost" style={{fontSize:11.5,padding:'4px 8px'}} onClick={()=>setDeletingId(null)}>إلغاء</button>
+                      </>
+                    ) : (
+                      <button className="btn btn-ghost" style={{fontSize:11.5,padding:'4px 8px',color:'var(--red)'}} onClick={()=>setDeletingId(c.category_id)}>حذف</button>
+                    )}
                   </>
                 )}
               </div>
