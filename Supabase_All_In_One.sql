@@ -3185,6 +3185,45 @@ end;
 $$;
 grant execute on function public.update_treatment(text, jsonb) to authenticated;
 
+-- ── RPC: delete a treatment plan (سجل العلاج) ────────────────
+-- Permanently removes one treatment record. Linked sessions are NOT
+-- deleted: the sessions.treatment_id FK is `on delete set null`, so they
+-- are automatically unlinked (and the completed-count trigger recounts).
+-- Returns how many sessions were detached so the client can inform the
+-- user. Admins and doctors only. Safe to re-run the definition.
+create or replace function public.delete_treatment(
+  p_treatment_id text
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_role     text := public.app_role();
+  v_uid      uuid := auth.uid();
+  v_unlinked int;
+  v_row      treatments%rowtype;
+begin
+  if v_role not in ('admin','doctor') then
+    raise exception 'غير مصرح';
+  end if;
+  select * into v_row from treatments where treatment_id = p_treatment_id;
+  if not found then raise exception 'سجل العلاج غير موجود'; end if;
+
+  -- Count the sessions that will be unlinked by the FK (on delete set null).
+  select count(*)::int into v_unlinked from sessions where treatment_id = p_treatment_id;
+
+  delete from treatments where treatment_id = p_treatment_id;
+
+  insert into audit_events (actor_uid, actor_role, action, table_name, row_pk, payload)
+  values (v_uid, v_role, 'treatment_delete', 'treatments', p_treatment_id, to_jsonb(v_row));
+
+  return jsonb_build_object(
+    'treatment_id', p_treatment_id,
+    'deleted', true,
+    'sessions_unlinked', v_unlinked
+  );
+end;
+$$;
+grant execute on function public.delete_treatment(text) to authenticated;
+
 -- ── RPC: list treatments (joined with patient name) ──────────
 create or replace function public.list_treatments(
   p_patient_id text default null,
