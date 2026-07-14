@@ -3970,3 +3970,53 @@ end $$;
 
 -- Refresh the PostgREST schema cache once, after all DDL above.
 notify pgrst, 'reload schema';
+
+-- ┌────────────────────────────────────────────────────────────────────┐
+-- │ 12. MIGRATION — staff account status enforcement + admin actions    │
+-- │ (admin password reset, activate/deactivate, audit trail)            │
+-- └────────────────────────────────────────────────────────────────────┘
+-- ══════════════════════════════════════════════════════════════════════
+-- A staff account can be deactivated by an admin. A deactivated account:
+--   • cannot sign in (blocked in signInEmail on the client, and the
+--     Auth user is banned via the admin API so token refresh fails);
+--   • loses ALL data access even with a still-valid access token, because
+--     public.app_role() below returns NULL for a non-active staff row, so
+--     every RLS policy that checks app_role() denies the request;
+--   • keeps its row + all historical data (appointments, sessions,
+--     invoices, audit logs) fully intact.
+-- Reactivation simply flips status back to 'active' and unbans the user.
+-- ══════════════════════════════════════════════════════════════════════
+
+-- Status column already added earlier (default 'active'); make sure every
+-- pre-existing row has a concrete value and constrain it to known states.
+alter table staff add column if not exists status text default 'active';
+update staff set status = 'active' where status is null or status not in ('active','inactive');
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'staff_status_chk'
+  ) then
+    alter table staff
+      add constraint staff_status_chk check (status in ('active','inactive'));
+  end if;
+end $$;
+create index if not exists staff_status_idx on staff(status);
+
+-- app_role() now resolves to the role ONLY for an ACTIVE staff row. A
+-- deactivated (or missing) account resolves to NULL, so every RLS policy
+-- that gates on app_role() denies it — this is the server-side teeth
+-- behind deactivation. security definer + fixed search_path unchanged.
+create or replace function public.app_role() returns text
+language plpgsql stable security definer
+set search_path = public
+as $$
+begin
+  return (
+    select s.role from staff s
+    where s.auth_uid = auth.uid()
+      and coalesce(s.status, 'active') = 'active'
+    limit 1
+  );
+end $$;
+
+-- Refresh PostgREST so the redefined function + new column are live.
+notify pgrst, 'reload schema';
